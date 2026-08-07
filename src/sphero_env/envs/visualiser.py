@@ -330,7 +330,10 @@ class Visualiser:
             pygame.draw.circle(self.screen, belief_color, (bpx, bpy), 4, 1)
             self._draw_covariance_ellipse(self.screen, mean_pos, cov_pos, world_to_screen, belief_color, n_std=2.0)
         # Legend
-        font = pygame.font.SysFont(None, 18)
+        # Use pygame's bundled default font. SysFont scans the Windows font
+        # registry, where malformed/non-string entries can make pygame 2.6.1
+        # fail before the first frame is displayed.
+        font = pygame.font.Font(None, 18)
         legend_lines = [
             "Green: ground truth",
             "Blue: odometry",

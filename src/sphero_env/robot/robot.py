@@ -34,6 +34,7 @@ class Robot(gym.Env):
         dt: float = 0.05,
         max_steps: int = 5000,
         vel_limit: float = 0.5,
+        raw_speed_limit: int = 255,
         settle_steps: int = 15,
 
         # World dimensions (meters) - for compatibility
@@ -67,6 +68,9 @@ class Robot(gym.Env):
         self.dt = dt
         self.max_steps = max_steps
         self.vel_limit = vel_limit
+        if not 1 <= int(raw_speed_limit) <= 255:
+            raise ValueError("raw_speed_limit must be between 1 and 255")
+        self.raw_speed_limit = int(raw_speed_limit)
         self.settle_steps = int(max(0, settle_steps))
 
         # World geometry
@@ -256,7 +260,7 @@ class Robot(gym.Env):
             time.sleep(self.dt)
             location = self.api.get_location()
             heading = self._heading_deg_to_rad(self.api.get_heading())
-            speed = (self.api.get_speed() / 255.0) * self.vel_limit
+            speed = (self.api.get_speed() / self.raw_speed_limit) * self.vel_limit
 
             if isinstance(location, dict):
                 x0 = float(location.get("x", 0.0)) / 100.0
@@ -393,10 +397,14 @@ class Robot(gym.Env):
         # Convert to robot command
         if speed_cmd < 0:
             heading_deg = int(np.degrees(self._wrap_angle(heading_cmd + np.pi)) % 360)
-            speed_raw = int(np.clip(-speed_cmd/self.vel_limit * 255, 0, 255))
+            speed_raw = int(
+                np.clip(-speed_cmd / self.vel_limit * self.raw_speed_limit, 0, self.raw_speed_limit)
+            )
         else:
             heading_deg = int(np.degrees(heading_cmd) % 360)
-            speed_raw = int(np.clip(speed_cmd / self.vel_limit * 255, 0, 255))
+            speed_raw = int(
+                np.clip(speed_cmd / self.vel_limit * self.raw_speed_limit, 0, self.raw_speed_limit)
+            )
 
         # Send command
         self.set_heading_and_speed(heading_deg, speed_raw)
@@ -404,7 +412,7 @@ class Robot(gym.Env):
 
         location = self.api.get_location()
         heading = self._heading_deg_to_rad(self.api.get_heading())
-        speed = (self.api.get_speed() / 255.0) * self.vel_limit
+        speed = (self.api.get_speed() / self.raw_speed_limit) * self.vel_limit
 
         if isinstance(location, dict):
             x_new = float(location.get("x", 0.0))/100.0  # Convert cm to m
