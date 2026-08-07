@@ -28,7 +28,6 @@ N_STEPS = 100
 TARGET = np.array([0.5, 0.5], dtype=np.float32)
 RAW_SPEED_LIMIT = 15  # BP-2E84: measured 0.140 m in 1 s at raw speed 15.
 LAB_DIR = Path(__file__).resolve().parent
-LOG_DIR = LAB_DIR / "logs"
 
 
 @dataclass(frozen=True)
@@ -135,14 +134,10 @@ def connect_with_retry(stack: ExitStack, selected_toy: object) -> SpheroEduAPI:
 @contextmanager
 def open_sim_env(render: bool) -> Iterator[SpheroEnv]:
     env = make_sim_env(render)
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    env.set_log_path(str(LOG_DIR / "lab1_sim.csv"))
-    env.start_logging()
     try:
         yield env
     finally:
         env.emergency_stop()
-        env.stop_logging()
         env.close()
 
 
@@ -154,14 +149,10 @@ def open_real_env() -> Iterator[Robot]:
         print(f"Connected to: {selected_toy.name}")
 
         env = make_real_env(api)
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
-        env.set_log_path(str(LOG_DIR / "lab1_real.csv"))
-        env.start_logging()
         try:
             yield env
         finally:
             env.emergency_stop()
-            env.stop_logging()
             env.close()
 
 

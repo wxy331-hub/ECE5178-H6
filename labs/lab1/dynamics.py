@@ -21,8 +21,6 @@ MODEL_CONFIG = {
     "max_deceleration_m_s2": 1.33,
     "max_turn_rate_rad_s": 2.61,
     "command_deadband_m_s": 0.0322,
-    # Heading is reset by the Sphero connection; no fixed cross-run offset.
-    "motion_heading_offset_rad": 0.0,
 }
 
 
@@ -80,11 +78,7 @@ def dynamics(state: np.ndarray, action: np.ndarray) -> np.ndarray:
     speed_new = _move_towards(float(speed), first_order_target, rate_limit * dt)
     speed_new = float(np.clip(speed_new, -max_speed, max_speed))
 
-    heading_mid = wrap_angle(
-        float(heading)
-        + 0.5 * heading_step
-        + MODEL_CONFIG["motion_heading_offset_rad"]
-    )
+    heading_mid = wrap_angle(float(heading) + 0.5 * heading_step)
     speed_mid = 0.5 * (float(speed) + speed_new)
     x_new = float(x) + speed_mid * np.sin(heading_mid) * dt
     y_new = float(y) + speed_mid * np.cos(heading_mid) * dt

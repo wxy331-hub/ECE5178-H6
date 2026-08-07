@@ -15,7 +15,7 @@ REQUIRED_COLUMNS = ("sim_x", "sim_y", "real_x", "real_y")
 EXPECTED_ROWS = 100
 
 
-def read_submission(path: Path) -> dict[str, np.ndarray]:
+def read_submission(path: Path) -> tuple[np.ndarray, np.ndarray]:
     with path.open("r", newline="", encoding="utf-8-sig") as handle:
         reader = csv.DictReader(handle)
         missing = [column for column in REQUIRED_COLUMNS if column not in (reader.fieldnames or [])]
@@ -26,28 +26,18 @@ def read_submission(path: Path) -> dict[str, np.ndarray]:
     if len(rows) != EXPECTED_ROWS:
         raise ValueError(f"Expected 100 data rows, found {len(rows)}")
 
-    data = {
+    columns = {
         column: np.asarray([float(row[column]) for row in rows], dtype=float)
         for column in REQUIRED_COLUMNS
     }
-    if not all(np.isfinite(values).all() for values in data.values()):
+    if not all(np.isfinite(values).all() for values in columns.values()):
         raise ValueError("CSV contains NaN or infinite values")
-    return data
+    sim = np.column_stack([columns["sim_x"], columns["sim_y"]])
+    real = np.column_stack([columns["real_x"], columns["real_y"]])
+    return sim, real
 
 
-def calculate_metrics(data: dict[str, np.ndarray]) -> dict[str, float]:
-    sim = np.column_stack([data["sim_x"], data["sim_y"]])
-    real = np.column_stack([data["real_x"], data["real_y"]])
-    return {
-        "sim_final_distance": float(np.linalg.norm(sim[-1] - TARGET)),
-        "real_final_distance": float(np.linalg.norm(real[-1] - TARGET)),
-        "trajectory_rmse": float(np.sqrt(np.mean(np.sum((sim - real) ** 2, axis=1)))),
-    }
-
-
-def save_plot(data: dict[str, np.ndarray], output_path: Path) -> None:
-    sim = np.column_stack([data["sim_x"], data["sim_y"]])
-    real = np.column_stack([data["real_x"], data["real_y"]])
+def save_plot(sim: np.ndarray, real: np.ndarray, output_path: Path) -> None:
     point_error = np.linalg.norm(sim - real, axis=1)
 
     figure, axes = plt.subplots(1, 2, figsize=(11, 4.5))
@@ -83,19 +73,21 @@ def main() -> int:
     parser.add_argument("--plot", type=Path, default=None)
     args = parser.parse_args()
 
-    data = read_submission(args.csv_path)
-    metrics = calculate_metrics(data)
+    sim, real = read_submission(args.csv_path)
+    sim_final_distance = float(np.linalg.norm(sim[-1] - TARGET))
+    real_final_distance = float(np.linalg.norm(real[-1] - TARGET))
+    trajectory_rmse = float(np.sqrt(np.mean(np.sum((sim - real) ** 2, axis=1))))
     plot_path = args.plot or args.csv_path.with_name(f"{args.csv_path.stem}_analysis.png")
-    save_plot(data, plot_path)
+    save_plot(sim, real, plot_path)
 
     checks = {
-        "Simulation final distance <= 0.10 m": metrics["sim_final_distance"] <= 0.10,
-        "Real final distance <= 0.10 m": metrics["real_final_distance"] <= 0.10,
-        "Trajectory RMSE <= 0.20 m": metrics["trajectory_rmse"] <= 0.20,
+        "Simulation final distance <= 0.10 m": sim_final_distance <= 0.10,
+        "Real final distance <= 0.10 m": real_final_distance <= 0.10,
+        "Trajectory RMSE <= 0.20 m": trajectory_rmse <= 0.20,
     }
-    print(f"Simulation final distance: {metrics['sim_final_distance']:.4f} m")
-    print(f"Real final distance:       {metrics['real_final_distance']:.4f} m")
-    print(f"Trajectory RMSE:           {metrics['trajectory_rmse']:.4f} m")
+    print(f"Simulation final distance: {sim_final_distance:.4f} m")
+    print(f"Real final distance:       {real_final_distance:.4f} m")
+    print(f"Trajectory RMSE:           {trajectory_rmse:.4f} m")
     for label, passed in checks.items():
         print(f"{'PASS' if passed else 'FAIL'}: {label}")
     print(f"Plot written to: {plot_path.resolve()}")
