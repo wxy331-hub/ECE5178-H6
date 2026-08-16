@@ -208,6 +208,11 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
+# pytest.ini pins --basetemp here. pytest creates the leaf but not its parent,
+# so the directory itself has to survive a clone or every tmp_path test errors.
+tmp/*
+!tmp/.gitkeep
+
 # code-review-graph knowledge graph (regenerated from the source tree)
 .code-review-graph/
 
