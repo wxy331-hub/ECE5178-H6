@@ -23,6 +23,16 @@ the venv rather than a bare `python`:
 Drop `--sim` for a hardware run; everything else stays the same. `--teleop` and
 `--hold` both require the pygame window, so they conflict with `--no-render`.
 
+After a hardware run, check what the filter was actually fed:
+
+```bash
+.venv/Scripts/python.exe labs/lab2/check_run.py
+```
+
+It replays `ImuHeadingSensor`'s arithmetic against the logged raw yaw, so it
+distinguishes a real sensor reading from the command echoed back — which the
+submission metrics cannot do — and prints the fix for each failed check.
+
 Both simulation and hardware write the same `studentid_lab2.csv`, so a
 simulation run overwrites a hardware result. Copy a hardware CSV aside before
 re-running in simulation.
