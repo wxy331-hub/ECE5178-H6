@@ -59,15 +59,19 @@ RAW_SPEED_LIMIT = 15
 # spots -- so the process noise below has to absorb it.
 SCRIPT_SPEED = 0.10
 
-# Steps per leg of the square.  Leg length is speed x LEG_STEPS x period, so
-# this -- not the speed -- is the knob for fitting a small arena: lowering the
-# speed to shorten a leg walks straight back into the deadband.  The right
-# value depends on the control period actually achieved, which the hardware
-# must measure; calibrate_leg.py prints it.  50 keeps the original four-leg
-# square: at 209 ms the 2026-08-21 run gave 0.41 m legs, but that length came
-# partly from stalling.  If the period halves, expect about 0.51 m instead --
-# roughly 0.62 m of floor once the ball's diameter is added.
-LEG_STEPS = 50
+# Geometry of the yellow lane on the lab track, estimated from the rulers in
+# the 2026-08-21 photograph.  These are the straight runs between corners and
+# the corner radius, not the outside dimensions: the lap works out at 1.67 m
+# and the path spans 0.44 x 0.45 m, which matches the measured track.
+#
+# Driving the lane instead of a square removes the pivot that cost the robot
+# its speed at every corner.  A 0.065 m radius at 0.09 m/s needs 1.39 rad/s,
+# which is 8.4 degrees per step against a demonstrated 45 -- the robot turns
+# while still driving, so there is no low-speed window for a high spot to
+# catch.
+TRACK_STRAIGHT_X = 0.31
+TRACK_STRAIGHT_Y = 0.32
+TRACK_RADIUS = 0.065
 
 LAB_DIR = Path(__file__).resolve().parent
 CSV_COLUMNS = (
@@ -285,14 +289,55 @@ def open_real_env() -> Iterator[Robot]:
             env.close()
 
 
+def _track_segments() -> tuple[tuple[float, float], ...]:
+    """The lane as (arc length, heading change) pairs, one lap, clockwise."""
+
+    corner = 0.5 * np.pi * TRACK_RADIUS
+    quarter = np.pi / 2.0
+    return (
+        (TRACK_STRAIGHT_Y, 0.0), (corner, quarter),
+        (TRACK_STRAIGHT_X, 0.0), (corner, quarter),
+        (TRACK_STRAIGHT_Y, 0.0), (corner, quarter),
+        (TRACK_STRAIGHT_X, 0.0), (corner, quarter),
+    )
+
+
+TRACK_LAP = sum(length for length, _ in _track_segments())
+
+
+def track_heading(distance: float) -> float:
+    """Heading relative to the start, at ``distance`` metres along the lane.
+
+    Straights hold their heading; corners turn linearly with arc length, which
+    is what a constant-radius turn at constant speed does.  Laps repeat.
+    """
+
+    remaining = distance % TRACK_LAP
+    heading = 0.0
+    for length, turn in _track_segments():
+        if remaining <= length:
+            return heading + (turn * remaining / length if turn else 0.0)
+        remaining -= length
+        heading += turn
+    return heading
+
+
 def scripted_action(step: int, initial_heading: float) -> np.ndarray:
-    """Drive a square, one leg every ``LEG_STEPS`` steps, lapping as needed."""
+    """Follow the yellow lane, parameterised by distance travelled.
+
+    The distance comes from the model's steady-state speed rather than from a
+    measurement, so this is open loop: the robot is told where to point at
+    each instant and cannot tell whether it has actually got there.  A speed
+    error accumulates as a position error along the lane, roughly 0.17 m over
+    a lap for a 10% error, which is why the run is scoped to about one lap.
+    """
 
     if not 0 <= step < N_STEPS:
         raise ValueError(f"step must be in [0, {N_STEPS})")
-    relative_headings = (0.0, np.pi / 2.0, np.pi, -np.pi / 2.0)
-    leg = (step // LEG_STEPS) % len(relative_headings)
-    heading = wrap_angle(initial_heading + relative_headings[leg])
+    speed = MODEL_CONFIG["speed_gain"] * max(
+        SCRIPT_SPEED - MODEL_CONFIG["command_deadband_m_s"], 0.0
+    )
+    heading = wrap_angle(initial_heading + track_heading(step * speed * DT))
     return np.array([SCRIPT_SPEED, heading], dtype=np.float32)
 
 

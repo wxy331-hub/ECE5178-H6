@@ -13,6 +13,7 @@ import pytest
 
 import analyze_lab2
 import lab2
+from lab2 import TRACK_RADIUS, TRACK_STRAIGHT_X, TRACK_STRAIGHT_Y
 from EKF import EKF, MODEL_CONFIG, _dynamics_float64, dynamics, wrap_angle
 
 
@@ -153,19 +154,58 @@ def test_covariance_remains_symmetric_positive_definite() -> None:
         assert np.all(np.isfinite(ekf.state_est))
 
 
-def test_scripted_actions_form_four_square_legs() -> None:
-    initial_heading = 0.3
-    expected_relative = (0.0, np.pi / 2.0, np.pi, -np.pi / 2.0)
-    legs = lab2.N_STEPS // lab2.LEG_STEPS
-    checkpoints = [leg * lab2.LEG_STEPS for leg in range(legs)]
-    for step, relative_heading in zip(
-        checkpoints, [expected_relative[i % 4] for i in range(legs)], strict=True
-    ):
-        action = lab2.scripted_action(step, initial_heading)
-        assert action[0] == pytest.approx(lab2.SCRIPT_SPEED)
-        assert action[1] == pytest.approx(
-            wrap_angle(initial_heading + relative_heading)
-        )
+def test_a_lap_closes_on_itself() -> None:
+    """Integrating the lane's own headings must return to the start.
+
+    A rounded rectangle only closes if the straights and the four quarter
+    turns are consistent; getting the corner arc length wrong shows up here
+    as a gap rather than as a robot in the wall.
+    """
+
+    n = 2000
+    step = lab2.TRACK_LAP / n
+    position = np.zeros(2)
+    for i in range(n):
+        heading = lab2.track_heading(i * step)
+        position += step * np.array([np.sin(heading), np.cos(heading)])
+
+    assert np.linalg.norm(position) < 1e-3  # back to the start
+    assert lab2.track_heading(lab2.TRACK_LAP) == pytest.approx(
+        lab2.track_heading(0.0)
+    )
+
+
+def test_the_lane_spans_the_measured_track() -> None:
+    n = 2000
+    step = lab2.TRACK_LAP / n
+    pts, position = [], np.zeros(2)
+    for i in range(n):
+        heading = lab2.track_heading(i * step)
+        position = position + step * np.array([np.sin(heading), np.cos(heading)])
+        pts.append(position.copy())
+    pts = np.asarray(pts)
+
+    width = pts[:, 0].max() - pts[:, 0].min()
+    height = pts[:, 1].max() - pts[:, 1].min()
+    assert width == pytest.approx(TRACK_STRAIGHT_X + 2 * TRACK_RADIUS, abs=2e-3)
+    assert height == pytest.approx(TRACK_STRAIGHT_Y + 2 * TRACK_RADIUS, abs=2e-3)
+
+
+def test_no_step_demands_more_turn_than_the_robot_can_deliver() -> None:
+    """The reason for driving the lane rather than a square.
+
+    A square commands 90 degrees in one step; the robot pivots at 511 deg/s to
+    obey and loses nearly all its forward speed, and eight of the ten stalled
+    steps on 2026-08-21 fell in the window where it was rebuilding that speed.
+    Along the lane the sharpest demand is a fraction of one step's capability.
+    """
+
+    headings = np.unwrap(
+        [float(lab2.scripted_action(k, 0.0)[1]) for k in range(lab2.N_STEPS)]
+    )
+    per_step = np.degrees(np.abs(np.diff(headings)))
+    demonstrated = np.degrees(MODEL_CONFIG["max_turn_rate_rad_s"] * lab2.DT)
+    assert per_step.max() < 0.5 * demonstrated
 
 
 def test_full_simulation_and_csv_analysis(
@@ -530,10 +570,10 @@ def test_hardware_run_feeds_the_estimate_back_to_the_robot(
 def test_hardware_run_tracks_heading_through_the_imu_not_the_echo(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """observation[2] stays at 0 while the square turns a full 360 degrees.
+    """observation[2] stays at 0 while the lane turns through a full lap.
 
     Ending the run near 0 would mean the filter followed the echo; following
-    the IMU means ending on the fourth leg's -90 degrees.
+    the IMU means ending wherever the lane points at step 200.
     """
 
     monkeypatch.setattr(lab2.time, "sleep", lambda _: None)
@@ -551,8 +591,25 @@ def test_hardware_run_tracks_heading_through_the_imu_not_the_echo(
 
     assert "IMU_YAW_SIGN is probably wrong" not in capsys.readouterr().out
 
-    column = lab2.DiagnosticLog.COLUMNS.index("z_heading")
-    assert diagnostics.rows[-1][column] == pytest.approx(-np.pi / 2.0)
+    # Checking one step is not enough: 200 steps cover 1.14 laps, so the last
+    # one lands back on a straight where the lane heading is 0 -- exactly what
+    # a command echo would also produce.  Compare the whole sequence.
+    columns = lab2.DiagnosticLog.COLUMNS
+    fed = np.array([row[columns.index("z_heading")] for row in diagnostics.rows])
+    commanded = np.array(
+        [row[columns.index("heading_cmd")] for row in diagnostics.rows]
+    )
+    observed = np.array(
+        [row[columns.index("obs_heading")] for row in diagnostics.rows]
+    )
+
+    assert np.abs(np.unwrap(commanded - commanded[0])).max() > np.radians(300.0)
+    assert np.allclose(observed, 0.0)  # the echo this must not follow
+    assert np.abs(fed - fed[0]).max() > np.radians(20.0)
+    # Wrap before comparing: at step 88 the lane passes through pi, where the
+    # two representations differ by 2*pi while pointing the same way.
+    delta = (fed - commanded + np.pi) % (2.0 * np.pi) - np.pi
+    assert np.abs(delta).max() < 1e-6
 
 
 def test_diagnostic_log_records_timing_and_raw_sensors(
