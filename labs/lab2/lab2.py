@@ -51,18 +51,25 @@ RAW_SPEED_LIMIT = 15
 # multiples of 0.01 reach the robot unchanged.  And the lab1 run put the real
 # deadband near 0.05 -- well above the 0.0322 the model assumes -- so a
 # command close to that stalls the robot instead of slowing it.
-# raw 10, which the 200-step run on 2026-08-21 completed successfully.  It
-# sits 4.6 counts above the re-estimated deadband of 0.0537; raw 8 would be
-# only 2.6 and drives at 0.051 m/s, close enough to the stalling point that
-# uneven floor stops the robot outright.  That run still stalled on 28% of its
-# steps, which is the floor rather than the command -- the arena has high
-# spots -- so the process noise below has to absorb it.
-SCRIPT_SPEED = 0.10
+# raw 12.  The track surface is slower than the floor the speed model was
+# calibrated on: at raw 10 the 12:35 run managed 0.064 m/s of real motion
+# against a predicted 0.091, and stalled on 37% of its steps, which together
+# leave 200 steps covering half a lap.  raw 12 buys back roughly the factor
+# needed, and a faster command also carries the robot over the high spots that
+# stop it at raw 10.
+#
+# It is also the second working point this surface has been measured at, so
+# the pair (raw 10, raw 12) can re-solve speed_gain and the deadband for the
+# track the way (raw 7, raw 10) did for the floor.
+SCRIPT_SPEED = 0.12
 
-# Geometry of the yellow lane on the lab track, estimated from the rulers in
-# the 2026-08-21 photograph.  These are the straight runs between corners and
-# the corner radius, not the outside dimensions: the lap works out at 1.67 m
-# and the path spans 0.44 x 0.45 m, which matches the measured track.
+# Geometry of the yellow lane: the straight runs between corners and the
+# corner radius, not the outside dimensions.
+#
+# Estimated from the rulers in the 2026-08-21 photograph.  These are the real
+# dimensions of the lane; the correction for the locator over-reading them
+# lives in LOCATOR_SCALE below, so that this stays a description of the track
+# rather than of the robot's opinion of it.
 #
 # Driving the lane instead of a square removes the pivot that cost the robot
 # its speed at every corner.  A 0.065 m radius at 0.09 m/s needs 1.39 rad/s,
@@ -72,6 +79,19 @@ SCRIPT_SPEED = 0.10
 TRACK_STRAIGHT_X = 0.31
 TRACK_STRAIGHT_Y = 0.32
 TRACK_RADIUS = 0.065
+
+# The locator over-reads distance on this surface, so lane progress has to be
+# scaled before it is believed.  Three independent estimates agree: over the
+# 12:35 run the locator integrated 0.980 m against the encoders' 0.834 (1.18),
+# the per-step ratio had a median of 1.32, and the operator saw each straight
+# come up 0.05-0.10 m short, which needs 1.23-1.31.  Taking 1.30 -- the robot
+# turned after 0.24 m of real motion while believing it had done 0.32, cut the
+# corner, and jammed against the central barrier at step 111.
+#
+# This corrects the schedule only.  The EKF still receives the raw locator
+# through the environment, because correcting a measurement to fit a model is
+# how the command echo went unnoticed for a fortnight.
+LOCATOR_SCALE = 1.0 / 1.30
 
 LAB_DIR = Path(__file__).resolve().parent
 CSV_COLUMNS = (
@@ -743,7 +763,9 @@ def run_experiment(
             dtype=np.float64,
         )
         if previous_position is not None:
-            travelled += float(np.linalg.norm(position - previous_position))
+            moved = float(np.linalg.norm(position - previous_position))
+            # Simulation reports truth and needs no correction.
+            travelled += moved * (1.0 if robot_env is None else LOCATOR_SCALE)
         previous_position = position
 
         if render:
