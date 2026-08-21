@@ -74,24 +74,31 @@ def test_dynamics_equations_match_lab1_under_lab1_parameters() -> None:
     MODEL_CONFIG.update(saved)
 
 
-def test_the_deadband_was_re_estimated_from_hardware() -> None:
-    """Record which parameters diverged from Lab 1, and why.
+HARDWARE_WORKING_POINTS = ((0.07, 0.0318), (0.10, 0.0905))
 
-    Lab 1's deadband of 0.0322 is contradicted twice over: its own run stalled
-    0.0633 m short while still commanding 0.0506 m/s, and at a 0.07 command the
-    encoders read 0.0318 m/s, implying 0.0582.  The gain is untouched, so the
-    two labs still agree on how command maps to speed once the robot moves.
+
+def test_the_speed_response_was_re_estimated_from_hardware() -> None:
+    """Record which parameters diverged from Lab 1, and hold them to the data.
+
+    speed_gain and the deadband are the slope and x-intercept of one line, so
+    a single working point cannot separate them -- Lab 1 fixed the gain from a
+    locator track that included stalled steps, reading the average of a
+    stop-start motion as a steady speed.  Two points measured on 2026-08-21
+    solve both, and this asserts the line still passes through both of them:
+    a later edit to either constant that breaks the fit fails here.
     """
 
     lab1 = _load_lab1_dynamics_module()
-    assert MODEL_CONFIG["speed_gain"] == pytest.approx(
-        lab1.MODEL_CONFIG["speed_gain"]
-    )
-    assert MODEL_CONFIG["command_deadband_m_s"] > lab1.MODEL_CONFIG[
-        "command_deadband_m_s"
-    ]
-    assert 0.045 <= MODEL_CONFIG["command_deadband_m_s"] <= 0.065
-    assert MODEL_CONFIG["dt"] > lab1.MODEL_CONFIG["dt"]  # measured 104.5 ms
+    gain = MODEL_CONFIG["speed_gain"]
+    deadband = MODEL_CONFIG["command_deadband_m_s"]
+
+    for command, measured in HARDWARE_WORKING_POINTS:
+        assert gain * (command - deadband) == pytest.approx(measured, abs=5e-4)
+
+    # Diverged from Lab 1, deliberately and in a known direction.
+    assert gain < lab1.MODEL_CONFIG["speed_gain"]
+    assert deadband > lab1.MODEL_CONFIG["command_deadband_m_s"]
+    assert MODEL_CONFIG["dt"] > lab1.MODEL_CONFIG["dt"]  # measured 104.9 ms
 
 
 def test_process_jacobian_matches_directional_difference() -> None:

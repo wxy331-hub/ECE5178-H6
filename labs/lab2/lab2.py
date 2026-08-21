@@ -51,13 +51,13 @@ RAW_SPEED_LIMIT = 15
 # multiples of 0.01 reach the robot unchanged.  And the lab1 run put the real
 # deadband near 0.05 -- well above the 0.0322 the model assumes -- so a
 # command close to that stalls the robot instead of slowing it.
-# raw 8.  That controlled run answered its question -- the period halved to
-# 104.5 ms -- and settled the other one too: the robot still stalled on 44% of
-# its steps and the encoders read 0.032 m/s, which puts the deadband near
-# 0.058 rather than the 0.0322 the model assumed.  raw 8 sits 2.5 counts above
-# the re-estimated deadband; raw 9 would clear it further but pushes the leg
-# to 0.49 m, and the arena cannot take that once the ball's width is added.
-SCRIPT_SPEED = 0.08
+# raw 10, which the 200-step run on 2026-08-21 completed successfully.  It
+# sits 4.6 counts above the re-estimated deadband of 0.0537; raw 8 would be
+# only 2.6 and drives at 0.051 m/s, close enough to the stalling point that
+# uneven floor stops the robot outright.  That run still stalled on 28% of its
+# steps, which is the floor rather than the command -- the arena has high
+# spots -- so the process noise below has to absorb it.
+SCRIPT_SPEED = 0.10
 
 # Steps per leg of the square.  Leg length is speed x LEG_STEPS x period, so
 # this -- not the speed -- is the knob for fitting a small arena: lowering the
@@ -86,7 +86,16 @@ CSV_COLUMNS = (
 # logs/lab2_diagnostics.csv after the next hardware run.  Deflating it
 # beforehand would be guesswork in the optimistic direction, which is the
 # dangerous one for a consistency metric.
-REAL_PROCESS_NOISE = np.diag([3.125e-5, 3.125e-5, 1.0e-4, 2.5e-5])
+REAL_PROCESS_NOISE = np.diag([3.125e-5, 3.125e-5, 1.0e-2, 2.5e-5])
+
+# Hardware measurement noise, taken from the innovations of the 2026-08-21 run
+# rather than from the simulator's settings.  The heading innovation had a
+# standard deviation of 0.10 rad, four times the 0.025 the simulator assumes,
+# because that reading carries the robot's real yaw wander on an uneven floor
+# and not just sensor noise.  Replaying the log offline, this alone brings the
+# mean NIS from 34.9 to 4.0 and the share inside the 95% gate from 2% to 90%;
+# the heading process noise above finishes it at 2.0 and 96%.
+REAL_MEASUREMENT_NOISE = np.diag([1.03e-2, 1.08e-3])
 
 # Sign of the IMU yaw relative to set_heading().  Both are documented as
 # increasing clockwise seen from above, so +1 was expected -- but regressing
@@ -603,10 +612,12 @@ def run_experiment(
     initial_state = np.array(
         [0.0, 0.0, initial_heading, initial_speed], dtype=np.float64
     )
+    hardware = robot_env is not None
     ekf = EKF(
         dt=DT,
         initial_state=initial_state,
-        process_noise=REAL_PROCESS_NOISE if robot_env is not None else None,
+        process_noise=REAL_PROCESS_NOISE if hardware else None,
+        measurement_noise=REAL_MEASUREMENT_NOISE if hardware else None,
     )
     sim_env.update_estimate(ekf.state_est, ekf.P)
     if robot_env is not None:
