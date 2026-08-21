@@ -51,9 +51,19 @@ RAW_SPEED_LIMIT = 15
 # multiples of 0.01 reach the robot unchanged.  And the lab1 run put the real
 # deadband near 0.05 -- well above the 0.0322 the model assumes -- so a
 # command close to that stalls the robot instead of slowing it.
-# At 0.10 the model settles at 0.182 m/s and each 50-step leg spans 0.87 m,
-# needing a 0.94 m square of floor; 0.07 gives 0.49 m legs in 0.53 m.
-SCRIPT_SPEED = 0.10
+# The 2026-08-21 run used 0.07 (raw 7) and the robot spent 32% of its steps
+# moving less than 2 mm -- raw 7 is only two counts above the real deadband,
+# which the lab1 data puts near raw 5, so it stalls and slips rather than
+# driving.  0.09 clears it with margin.
+SCRIPT_SPEED = 0.09
+
+# Steps per leg of the square.  Leg length is speed x LEG_STEPS x period, so
+# this -- not the speed -- is the knob for fitting a small arena: lowering the
+# speed to shorten a leg walks straight back into the deadband.  The right
+# value depends on the control period actually achieved, which the hardware
+# must measure; calibrate_leg.py prints it.  25 assumes ThrottledRobot brings
+# the period near 105 ms, giving 8 legs (two laps) of about 0.41 m.
+LEG_STEPS = 25
 
 LAB_DIR = Path(__file__).resolve().parent
 CSV_COLUMNS = (
@@ -75,9 +85,11 @@ CSV_COLUMNS = (
 REAL_PROCESS_NOISE = np.diag([3.125e-5, 3.125e-5, 1.0e-4, 2.5e-5])
 
 # Sign of the IMU yaw relative to set_heading().  Both are documented as
-# increasing clockwise seen from above, so +1 is expected but unverified;
-# ImuHeadingSensor detects and recovers from the wrong choice.
-IMU_YAW_SIGN = 1.0
+# increasing clockwise seen from above, so +1 was expected -- but regressing
+# the measured yaw against the commanded heading over the 2026-08-21 run gives
+# a slope of -0.97, so the documentation does not hold for this robot.  The
+# guard in ImuHeadingSensor caught it mid-run and fell back to the observation.
+IMU_YAW_SIGN = -1.0
 # A scripted heading step is 90 degrees and the 2.61 rad/s turn limit clears
 # it in six steps, so disagreement past this margin is a sign error rather
 # than a turn transient.
@@ -160,8 +172,37 @@ def make_sim_env(render: bool) -> SpheroEnv:
     )
 
 
+class ThrottledRobot(Robot):
+    """One BLE write per step instead of two, without touching the framework.
+
+    ``Robot.set_heading_and_speed`` calls ``set_heading`` and then
+    ``set_speed``, and both end in the same
+    ``ToyUtil.roll_start(heading, speed)`` command.  The first one carries the
+    *previous* speed and is overwritten by the second a full BLE round trip
+    later, so whenever the heading is unchanged it buys nothing.
+
+    It costs a lot.  The 2026-08-21 run measured a 209 ms control period
+    against the 100 ms the filter assumes, which doubles every predicted
+    displacement, and 49 of every 50 steps hold the heading constant.
+
+    Overriding this one method leaves src/sphero_env untouched.
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._last_heading_deg: int | None = None
+
+    def set_heading_and_speed(self, heading_deg: float, speed: int) -> None:
+        commanded = int(heading_deg)
+        with self._lock:
+            if commanded != self._last_heading_deg:
+                self.api.set_heading(commanded)
+                self._last_heading_deg = commanded
+            self.api.set_speed(int(np.clip(speed, 0, 255)))
+
+
 def make_real_env(api: SpheroEduAPI) -> Robot:
-    return Robot(
+    return ThrottledRobot(
         api=api,
         dt=DT,
         max_steps=N_STEPS,
@@ -232,12 +273,12 @@ def open_real_env() -> Iterator[Robot]:
 
 
 def scripted_action(step: int, initial_heading: float) -> np.ndarray:
-    """Follow four 50-step legs of a square at a conservative speed."""
+    """Drive a square, one leg every ``LEG_STEPS`` steps, lapping as needed."""
 
     if not 0 <= step < N_STEPS:
         raise ValueError(f"step must be in [0, {N_STEPS})")
     relative_headings = (0.0, np.pi / 2.0, np.pi, -np.pi / 2.0)
-    leg = min(step // 50, len(relative_headings) - 1)
+    leg = (step // LEG_STEPS) % len(relative_headings)
     heading = wrap_angle(initial_heading + relative_headings[leg])
     return np.array([SCRIPT_SPEED, heading], dtype=np.float32)
 

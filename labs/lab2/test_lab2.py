@@ -117,8 +117,10 @@ def test_covariance_remains_symmetric_positive_definite() -> None:
 def test_scripted_actions_form_four_square_legs() -> None:
     initial_heading = 0.3
     expected_relative = (0.0, np.pi / 2.0, np.pi, -np.pi / 2.0)
+    legs = lab2.N_STEPS // lab2.LEG_STEPS
+    checkpoints = [leg * lab2.LEG_STEPS for leg in range(legs)]
     for step, relative_heading in zip(
-        (0, 50, 100, 150), expected_relative, strict=True
+        checkpoints, [expected_relative[i % 4] for i in range(legs)], strict=True
     ):
         action = lab2.scripted_action(step, initial_heading)
         assert action[0] == pytest.approx(lab2.SCRIPT_SPEED)
@@ -267,6 +269,22 @@ def _hardware_info(
     }
 
 
+def _honest_yaw(heading_rad: float, origin: float = 0.0,
+                initial_rad: float = 0.0) -> float:
+    """The yaw a correctly-signed IMU reports when the robot holds a heading.
+
+    ImuHeadingSensor rebuilds heading as ``initial + SIGN * turned``, so an
+    honest sensor whose zero sits at ``origin`` reports
+    ``origin + SIGN * (heading - initial)``.  Deriving the test data from
+    IMU_YAW_SIGN keeps these tests about the logic -- zero cancellation,
+    the transient guard, the fallback -- rather than about one sign that the
+    hardware later contradicted.
+    """
+
+    turned = np.degrees(wrap_angle(heading_rad - initial_rad))
+    return wrap_angle_degrees(origin + lab2.IMU_YAW_SIGN * turned)
+
+
 def _fake_robot() -> Mock:
     robot = Mock()
     observation = np.array([0.0, 0.0, 0.0, 0.10, 0.0], dtype=np.float32)
@@ -275,7 +293,7 @@ def _fake_robot() -> Mock:
     def step(action):
         # A well-behaved robot: its IMU follows the commanded heading, while
         # observation[2] stays at zero the way a command echo would.
-        info = _hardware_info(yaw=wrap_angle_degrees(np.degrees(action[1])))
+        info = _hardware_info(yaw=_honest_yaw(float(action[1])))
         return observation, None, False, False, info
 
     robot.step.side_effect = step
@@ -339,7 +357,8 @@ def test_imu_heading_cancels_an_unknown_zero_point(imu_origin: float) -> None:
     assert first == pytest.approx(0.0)
 
     turned = sensor.measure(
-        _hardware_info(yaw=wrap_angle_degrees(imu_origin + 90.0)), np.pi / 2.0
+        _hardware_info(yaw=_honest_yaw(np.pi / 2.0, origin=imu_origin)),
+        np.pi / 2.0,
     )
     assert turned == pytest.approx(np.pi / 2.0)
 
@@ -354,9 +373,10 @@ def test_imu_heading_survives_a_normal_turn_transient() -> None:
     sensor.measure(_hardware_info(yaw=0.0), 0.0)
     step_degrees = np.degrees(MODEL_CONFIG["max_turn_rate_rad_s"] * 0.1)
 
-    yaw = 0.0
+    turned = 0.0
     for _ in range(12):
-        yaw = min(90.0, yaw + step_degrees)
+        turned = min(90.0, turned + step_degrees)
+        yaw = _honest_yaw(np.deg2rad(turned))
         assert sensor.measure(_hardware_info(yaw=yaw), np.pi / 2.0) is not None
 
     assert not sensor.disabled
@@ -370,10 +390,12 @@ def test_imu_heading_disables_itself_when_the_sign_is_wrong(
     sensor = lab2.ImuHeadingSensor(initial_heading=0.0)
     sensor.measure(_hardware_info(yaw=0.0), 0.0)
 
-    # The robot really turns +90; a mirrored IMU reports -90.
+    # The robot really turns +90; an IMU wired the other way reports the
+    # mirror of what IMU_YAW_SIGN expects, whichever sign that constant holds.
+    mirrored = -_honest_yaw(np.pi / 2.0)
     result: float | None = 0.0
     for _ in range(lab2.IMU_DISAGREEMENT_PATIENCE + 1):
-        result = sensor.measure(_hardware_info(yaw=-90.0), np.pi / 2.0)
+        result = sensor.measure(_hardware_info(yaw=mirrored), np.pi / 2.0)
 
     assert result is None
     assert sensor.disabled
@@ -404,7 +426,7 @@ def test_extract_measurement_prefers_the_imu_over_the_heading_echo() -> None:
     )
     z = lab2.extract_measurement(
         observation,
-        _hardware_info(yaw=45.0),
+        _hardware_info(yaw=_honest_yaw(np.deg2rad(45.0))),
         heading_sensor=sensor,
         commanded_heading=np.pi / 4.0,
     )
