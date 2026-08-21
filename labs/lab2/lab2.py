@@ -51,19 +51,23 @@ RAW_SPEED_LIMIT = 15
 # multiples of 0.01 reach the robot unchanged.  And the lab1 run put the real
 # deadband near 0.05 -- well above the 0.0322 the model assumes -- so a
 # command close to that stalls the robot instead of slowing it.
-# The 2026-08-21 run used 0.07 (raw 7) and the robot spent 32% of its steps
-# moving less than 2 mm -- raw 7 is only two counts above the real deadband,
-# which the lab1 data puts near raw 5, so it stalls and slips rather than
-# driving.  0.09 clears it with margin.
-SCRIPT_SPEED = 0.09
+# raw 7, deliberately, even though the 2026-08-21 run stalled on 32% of its
+# steps at this command: raw 7 sits only two counts above the deadband the
+# lab1 data puts near raw 5.  It is kept for one more run to isolate a single
+# variable -- whether ThrottledRobot brings the control period down -- by
+# changing nothing else.  If the stall rate drops with it, the deadband
+# estimate was wrong; if it does not, raise this to 0.08 or 0.09.
+SCRIPT_SPEED = 0.07
 
 # Steps per leg of the square.  Leg length is speed x LEG_STEPS x period, so
 # this -- not the speed -- is the knob for fitting a small arena: lowering the
 # speed to shorten a leg walks straight back into the deadband.  The right
 # value depends on the control period actually achieved, which the hardware
-# must measure; calibrate_leg.py prints it.  25 assumes ThrottledRobot brings
-# the period near 105 ms, giving 8 legs (two laps) of about 0.41 m.
-LEG_STEPS = 25
+# must measure; calibrate_leg.py prints it.  50 keeps the original four-leg
+# square: at 209 ms the 2026-08-21 run gave 0.41 m legs, but that length came
+# partly from stalling.  If the period halves, expect about 0.51 m instead --
+# roughly 0.62 m of floor once the ball's diameter is added.
+LEG_STEPS = 50
 
 LAB_DIR = Path(__file__).resolve().parent
 CSV_COLUMNS = (
