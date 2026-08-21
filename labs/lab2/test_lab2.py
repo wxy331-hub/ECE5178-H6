@@ -200,8 +200,12 @@ def test_no_step_demands_more_turn_than_the_robot_can_deliver() -> None:
     Along the lane the sharpest demand is a fraction of one step's capability.
     """
 
+    speed = MODEL_CONFIG["speed_gain"] * (
+        lab2.SCRIPT_SPEED - MODEL_CONFIG["command_deadband_m_s"]
+    )
+    distances = np.arange(lab2.N_STEPS) * speed * lab2.DT
     headings = np.unwrap(
-        [float(lab2.scripted_action(k, 0.0)[1]) for k in range(lab2.N_STEPS)]
+        [float(lab2.scripted_action(d, 0.0)[1]) for d in distances]
     )
     per_step = np.degrees(np.abs(np.diff(headings)))
     demonstrated = np.degrees(MODEL_CONFIG["max_turn_rate_rad_s"] * lab2.DT)
@@ -371,15 +375,39 @@ def _honest_yaw(heading_rad: float, origin: float = 0.0,
     return wrap_angle_degrees(origin + lab2.IMU_YAW_SIGN * turned)
 
 
-def _fake_robot() -> Mock:
+def _fake_robot(stall_every: int = 0) -> Mock:
+    """A robot that moves, so lane progress advances the way it does on hardware.
+
+    The trajectory is driven by measured displacement, so a mock whose
+    state_odom never changes leaves the lane frozen at its starting heading --
+    which is what a stalled robot looks like, and not what most of these tests
+    mean to exercise.  ``stall_every`` pins the robot in place on that many
+    steps out of ten, for the tests that do.
+    """
+
     robot = Mock()
     observation = np.array([0.0, 0.0, 0.0, 0.10, 0.0], dtype=np.float32)
+    speed = MODEL_CONFIG["speed_gain"] * (
+        lab2.SCRIPT_SPEED - MODEL_CONFIG["command_deadband_m_s"]
+    )
+    place = {"xy": np.zeros(2), "step": 0}
     robot.reset.return_value = (observation, _hardware_info())
 
     def step(action):
         # A well-behaved robot: its IMU follows the commanded heading, while
         # observation[2] stays at zero the way a command echo would.
-        info = _hardware_info(yaw=_honest_yaw(float(action[1])))
+        heading = float(action[1])
+        stalled = stall_every and place["step"] % 10 < stall_every
+        if not stalled:
+            place["xy"] = place["xy"] + speed * lab2.DT * np.array(
+                [np.sin(heading), np.cos(heading)]
+            )
+        place["step"] += 1
+        info = _hardware_info(yaw=_honest_yaw(heading))
+        info["state_odom"] = np.array(
+            [place["xy"][0], place["xy"][1], heading, 0.0 if stalled else speed],
+            dtype=np.float32,
+        )
         return observation, None, False, False, info
 
     robot.step.side_effect = step
@@ -565,6 +593,80 @@ def test_hardware_run_feeds_the_estimate_back_to_the_robot(
     mean, covariance = robot.update_estimate.call_args[0]
     assert np.all(np.isfinite(mean)) and mean.shape == (4,)
     assert np.all(np.isfinite(covariance)) and covariance.shape == (4, 4)
+
+
+def _run_and_trace(robot) -> tuple[np.ndarray, np.ndarray]:
+    """Return (distance travelled, commanded heading) for every step."""
+
+    diagnostics = lab2.DiagnosticLog()
+    with lab2.open_sim_env(False) as environment:
+        lab2.run_experiment(
+            environment, robot, render=False, teleop=False,
+            seed=5178, diagnostics=diagnostics,
+        )
+    columns = lab2.DiagnosticLog.COLUMNS
+    rows = np.asarray(diagnostics.rows, dtype=float)
+    position = rows[:, [columns.index("odom_x"), columns.index("odom_y")]]
+    travelled = np.concatenate(
+        [[0.0], np.cumsum(np.linalg.norm(np.diff(position, axis=0), axis=1))]
+    )
+    return travelled, rows[:, columns.index("heading_cmd")]
+
+
+def test_the_lane_advances_with_distance_not_with_time() -> None:
+    """A stall must cost time but not lane position.
+
+    On 2026-08-21 the schedule was ``step * speed * dt``, so a robot pinned
+    against a high spot kept "progressing" while standing still: the corner
+    was commanded after 0.219 m of real motion instead of the 0.32 m straight,
+    and the robot turned early by 0.10 m. Driving the lane from measured
+    displacement means the two runs below trace the same heading-versus-
+    distance curve, and the stalling one simply gets less far along it.
+    """
+
+    clean_distance, clean_heading = _run_and_trace(_fake_robot())
+    stalled_distance, stalled_heading = _run_and_trace(_fake_robot(stall_every=3))
+
+    # The stalling robot covers less ground in the same 200 steps.
+    assert stalled_distance[-1] < 0.85 * clean_distance[-1]
+
+    # But at equal distance travelled, both are told to point the same way --
+    # which is the property a clock-driven schedule does not have.
+    # heading_cmd[k] was computed from the distance measured up to step k-1:
+    # the command has to go out before the step it causes can be measured.
+    for distance in (0.10, 0.25, 0.40, 0.60):
+        if distance < stalled_distance[-2]:
+            a = np.interp(distance, clean_distance[:-1],
+                          np.unwrap(clean_heading)[1:])
+            b = np.interp(distance, stalled_distance[:-1],
+                          np.unwrap(stalled_heading)[1:])
+            assert a == pytest.approx(b, abs=np.radians(3.0))
+
+    # And the corner is not commanded before the straight is finished.
+    turned = np.argmax(np.abs(np.unwrap(stalled_heading)) > np.radians(1.0))
+    assert stalled_distance[turned - 1] >= 0.95 * lab2.TRACK_STRAIGHT_Y
+
+
+def test_the_robot_stops_after_one_lap() -> None:
+    """200 steps of data, one lap of driving.
+
+    How far 200 steps carry the robot depends on the stall rate, so the lap
+    count cannot be fixed by choosing a speed. Stopping when the lap closes
+    fixes it directly, and leaves the filter a stationary target -- which it
+    ought to predict exactly.
+    """
+
+    before = lab2.scripted_action(lab2.TRACK_LAP - 0.01, 0.0)
+    after = lab2.scripted_action(lab2.TRACK_LAP + 0.01, 0.0)
+
+    assert before[0] == pytest.approx(lab2.SCRIPT_SPEED)
+    assert after[0] == 0.0
+
+    # A closed lap returns to the starting heading rather than winding on.
+    assert after[1] == pytest.approx(lab2.scripted_action(0.0, 0.0)[1], abs=1e-6)
+
+    # And it never begins a second lap, however far the robot over-runs.
+    assert lab2.scripted_action(3 * lab2.TRACK_LAP, 0.0)[0] == 0.0
 
 
 def test_hardware_run_tracks_heading_through_the_imu_not_the_echo(

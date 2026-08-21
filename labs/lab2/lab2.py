@@ -322,23 +322,32 @@ def track_heading(distance: float) -> float:
     return heading
 
 
-def scripted_action(step: int, initial_heading: float) -> np.ndarray:
-    """Follow the yellow lane, parameterised by distance travelled.
+def scripted_action(travelled: float, initial_heading: float) -> np.ndarray:
+    """Point along the lane at ``travelled`` metres of measured progress.
 
-    The distance comes from the model's steady-state speed rather than from a
-    measurement, so this is open loop: the robot is told where to point at
-    each instant and cannot tell whether it has actually got there.  A speed
-    error accumulates as a position error along the lane, roughly 0.17 m over
-    a lap for a 10% error, which is why the run is scoped to about one lap.
+    The argument is distance actually covered, not ``step * speed * dt``.
+    Those differ whenever the robot fails to move: on 2026-08-21 it stalled on
+    33% of its steps against high spots in the floor, and a clock-driven
+    schedule kept advancing the corner while the robot stood still, so the
+    turn was commanded after 0.219 m of real motion instead of the 0.32 m
+    straight.  Feeding measured progress in makes a stall cost time but not
+    position -- the robot resumes the corner exactly where it left off.
     """
 
-    if not 0 <= step < N_STEPS:
-        raise ValueError(f"step must be in [0, {N_STEPS})")
-    speed = MODEL_CONFIG["speed_gain"] * max(
-        SCRIPT_SPEED - MODEL_CONFIG["command_deadband_m_s"], 0.0
-    )
-    heading = wrap_angle(initial_heading + track_heading(step * speed * DT))
-    return np.array([SCRIPT_SPEED, heading], dtype=np.float32)
+    if travelled < 0.0:
+        raise ValueError("travelled must not be negative")
+
+    # Stop after one lap.  The assignment wants 200 steps of data, not 200
+    # steps of driving, and how far 200 steps carry the robot depends on how
+    # much of that time it spends stuck: 1.08 laps clean, 0.72 at the 33%
+    # stall rate measured on 2026-08-21.  Holding still once the lap closes
+    # keeps the path to exactly one lap either way, and the filter still has
+    # something to do -- a stationary robot is a prediction it should get
+    # right.
+    completed = travelled >= TRACK_LAP
+    speed = 0.0 if completed else SCRIPT_SPEED
+    heading = wrap_angle(initial_heading + track_heading(min(travelled, TRACK_LAP)))
+    return np.array([speed, heading], dtype=np.float32)
 
 
 def _poll_for_abort() -> None:
@@ -678,6 +687,9 @@ def run_experiment(
         ImuHeadingSensor(initial_heading) if robot_env is not None else None
     )
     records: list[EstimateRecord] = []
+    # Lane progress, measured rather than assumed; see scripted_action.
+    travelled = 0.0
+    previous_position: np.ndarray | None = None
     # perf_counter, not monotonic: the latter quantises to 15.625 ms here, so
     # pacing a 100 ms loop with it injects up to 16% period error by itself.
     next_tick = time.perf_counter()
@@ -692,7 +704,7 @@ def run_experiment(
         else:
             if render:
                 _poll_for_abort()
-            action = scripted_action(step, initial_heading)
+            action = scripted_action(travelled, initial_heading)
 
         sim_observation, _, _, _, sim_info = sim_env.step(action)
         if robot_env is None:
@@ -722,10 +734,25 @@ def run_experiment(
                 measurement,
             )
 
+        # Advance lane progress by what actually moved.  Hardware uses the
+        # locator, which reports nothing while the robot is stuck; simulation
+        # uses its own truth so both environments follow one schedule.
+        source = sim_info if robot_env is None else sensor_info
+        position = np.asarray(
+            source["state_true" if robot_env is None else "state_odom"][:2],
+            dtype=np.float64,
+        )
+        if previous_position is not None:
+            travelled += float(np.linalg.norm(position - previous_position))
+        previous_position = position
+
         if render:
             sim_env.render()
         if (step + 1) % 50 == 0:
-            print(f"Completed {step + 1}/{N_STEPS} steps")
+            print(
+                f"Completed {step + 1}/{N_STEPS} steps, "
+                f"{travelled:.2f}/{TRACK_LAP:.2f} m of the lap"
+            )
 
         next_tick += DT
         time.sleep(max(0.0, next_tick - time.perf_counter()))
