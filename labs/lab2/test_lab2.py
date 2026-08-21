@@ -121,7 +121,7 @@ def test_scripted_actions_form_four_square_legs() -> None:
         (0, 50, 100, 150), expected_relative, strict=True
     ):
         action = lab2.scripted_action(step, initial_heading)
-        assert action[0] == pytest.approx(0.10)
+        assert action[0] == pytest.approx(lab2.SCRIPT_SPEED)
         assert action[1] == pytest.approx(
             wrap_angle(initial_heading + relative_heading)
         )
@@ -198,15 +198,21 @@ def test_observation_range_must_cover_the_model_response() -> None:
     """The command limit and the sensor range are different quantities.
 
     Both environments call the parameter ``vel_limit``, and using one value
-    for both silently saturated every simulated speed reading: at the
-    scripted 0.10 command the model settles well above 0.15 m/s.
+    for both silently saturated every simulated speed reading.
+
+    This deliberately does not use SCRIPT_SPEED.  The two quantities have to
+    stay separate whatever speed the script happens to command, so the bound
+    that matters is the fastest command the hardware accepts: if the model
+    outruns the range even there, tying them together is wrong in general.
+    Anchoring the assertion to the working point instead would let a slower
+    script silently satisfy it while the underlying confusion remained.
     """
 
-    steady_speed = MODEL_CONFIG["speed_gain"] * (
-        0.10 - MODEL_CONFIG["command_deadband_m_s"]
+    steady_at_cap = MODEL_CONFIG["speed_gain"] * (
+        lab2.COMMAND_SPEED_LIMIT - MODEL_CONFIG["command_deadband_m_s"]
     )
-    assert steady_speed > lab2.COMMAND_SPEED_LIMIT  # why it mattered
-    assert lab2.SIM_SPEED_LIMIT > steady_speed  # why it is fixed now
+    assert steady_at_cap > lab2.COMMAND_SPEED_LIMIT  # why it mattered
+    assert lab2.SIM_SPEED_LIMIT > steady_at_cap  # why it is fixed now
 
 
 def test_simulated_speed_readings_are_no_longer_clipped() -> None:

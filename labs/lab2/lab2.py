@@ -39,11 +39,22 @@ N_STEPS = 200
 # this one must stay at 0.15 or the robot drives at the wrong speed.
 COMMAND_SPEED_LIMIT = 0.15
 # The simulator's is an observation range, and it has to cover what the model
-# can produce: at a 0.10 command the model settles at 0.182 m/s, so a 0.15
+# can produce: the original 0.10 command settled at 0.182 m/s, so a 0.15
 # range clipped every speed reading.
 SIM_SPEED_LIMIT = MODEL_CONFIG["max_speed_m_s"]
 
 RAW_SPEED_LIMIT = 15
+
+# Speed commanded along every leg of the square.  Two things bound it.  The
+# hardware quantises the command to an integer raw unit
+# (raw = int(speed_cmd / COMMAND_SPEED_LIMIT * RAW_SPEED_LIMIT)), so only
+# multiples of 0.01 reach the robot unchanged.  And the lab1 run put the real
+# deadband near 0.05 -- well above the 0.0322 the model assumes -- so a
+# command close to that stalls the robot instead of slowing it.
+# At 0.10 the model settles at 0.182 m/s and each 50-step leg spans 0.87 m,
+# needing a 0.94 m square of floor; 0.07 gives 0.49 m legs in 0.53 m.
+SCRIPT_SPEED = 0.10
+
 LAB_DIR = Path(__file__).resolve().parent
 CSV_COLUMNS = (
     "sim_x",
@@ -228,7 +239,7 @@ def scripted_action(step: int, initial_heading: float) -> np.ndarray:
     relative_headings = (0.0, np.pi / 2.0, np.pi, -np.pi / 2.0)
     leg = min(step // 50, len(relative_headings) - 1)
     heading = wrap_angle(initial_heading + relative_headings[leg])
-    return np.array([0.10, heading], dtype=np.float32)
+    return np.array([SCRIPT_SPEED, heading], dtype=np.float32)
 
 
 def _poll_for_abort() -> None:
