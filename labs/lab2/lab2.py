@@ -30,7 +30,7 @@ except ImportError:
     from analyze_lab2 import analyze_values, save_plot
 
 
-DT = 0.1
+DT = MODEL_CONFIG["dt"]  # 0.105: what the hardware loop actually achieves
 N_STEPS = 200
 
 # Both environments call their speed cap ``vel_limit``, but they mean
@@ -51,13 +51,13 @@ RAW_SPEED_LIMIT = 15
 # multiples of 0.01 reach the robot unchanged.  And the lab1 run put the real
 # deadband near 0.05 -- well above the 0.0322 the model assumes -- so a
 # command close to that stalls the robot instead of slowing it.
-# raw 7, deliberately, even though the 2026-08-21 run stalled on 32% of its
-# steps at this command: raw 7 sits only two counts above the deadband the
-# lab1 data puts near raw 5.  It is kept for one more run to isolate a single
-# variable -- whether ThrottledRobot brings the control period down -- by
-# changing nothing else.  If the stall rate drops with it, the deadband
-# estimate was wrong; if it does not, raise this to 0.08 or 0.09.
-SCRIPT_SPEED = 0.07
+# raw 8.  That controlled run answered its question -- the period halved to
+# 104.5 ms -- and settled the other one too: the robot still stalled on 44% of
+# its steps and the encoders read 0.032 m/s, which puts the deadband near
+# 0.058 rather than the 0.0322 the model assumed.  raw 8 sits 2.5 counts above
+# the re-estimated deadband; raw 9 would clear it further but pushes the leg
+# to 0.49 m, and the arena cannot take that once the ball's width is added.
+SCRIPT_SPEED = 0.08
 
 # Steps per leg of the square.  Leg length is speed x LEG_STEPS x period, so
 # this -- not the speed -- is the knob for fitting a small arena: lowering the

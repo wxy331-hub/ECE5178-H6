@@ -13,9 +13,10 @@ import numpy as np
 import pytest
 
 try:
-    from . import check_run
+    from . import check_run, lab2
 except ImportError:
     import check_run
+    import lab2
 
 
 TURN_LIMIT_PER_STEP = 2.61 * 0.1
@@ -23,12 +24,14 @@ TURN_LIMIT_PER_STEP = 2.61 * 0.1
 
 def _hardware_log(
     *,
-    sign: float = 1.0,
+    sign: float | None = None,
     imu_used: bool = True,
     imu_present: bool = True,
     encoder: bool = True,
     echo_speed: bool = False,
 ) -> dict[str, np.ndarray]:
+    if sign is None:
+        sign = lab2.IMU_YAW_SIGN  # a healthy log agrees with the configuration
     steps = 200
     leg = np.minimum(np.arange(steps) // 50, 3)
     commanded = np.array([0.0, np.pi / 2.0, np.pi, -np.pi / 2.0])[leg]
@@ -84,9 +87,16 @@ def test_a_command_echo_is_not_mistaken_for_an_encoder_reading():
 
 
 @pytest.mark.parametrize("sign", [1.0, -1.0])
-def test_the_yaw_sign_is_recovered_from_the_log(sign):
+def test_the_yaw_sign_is_judged_against_the_configured_one(sign):
+    """The checker compares the log against IMU_YAW_SIGN, not against +1.
+
+    Hard-coding +1 here made the checker report a failure on the 2026-08-21
+    run *after* the constant had been corrected to -1, telling the operator to
+    make a change that was already in place.
+    """
+
     report = _run(check_run.check_imu_sign, _hardware_log(sign=sign))
-    assert bool(report.failures) is (sign < 0)
+    assert bool(report.failures) is (sign != lab2.IMU_YAW_SIGN)
 
 
 def test_a_tracking_robot_does_not_look_like_a_command_echo():
@@ -103,7 +113,7 @@ def test_a_tracking_robot_does_not_look_like_a_command_echo():
 
 
 def test_a_mid_run_fallback_to_the_observation_is_caught():
-    log = _hardware_log(sign=-1.0, imu_used=False)
+    log = _hardware_log(sign=-lab2.IMU_YAW_SIGN, imu_used=False)
     assert _run(check_run.check_heading_source, log).failures
 
 

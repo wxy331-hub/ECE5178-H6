@@ -17,6 +17,11 @@ from pathlib import Path
 
 import numpy as np
 
+try:
+    from . import lab2
+except ImportError:
+    import lab2
+
 LAB_DIR = Path(__file__).resolve().parent
 LOG_PATH = LAB_DIR.parents[1] / "logs" / "lab2_diagnostics.csv"
 
@@ -211,17 +216,21 @@ def check_imu_sign(log: dict[str, np.ndarray], report: Report) -> None:
         return
 
     slope = float(np.polyfit(expected, measured, 1)[0])
-    detail = f"IMU yaw tracked the commanded heading with slope {slope:+.2f}."
-    if slope > 0.5:
-        report.add(PASS, "IMU yaw sign", detail + " IMU_YAW_SIGN = +1 is correct.")
-    elif slope < -0.5:
+    configured = float(lab2.IMU_YAW_SIGN)
+    detail = (
+        f"IMU yaw tracked the commanded heading with slope {slope:+.2f}; "
+        f"IMU_YAW_SIGN is {configured:+.0f}."
+    )
+    if abs(slope) > 0.5 and np.sign(slope) == np.sign(configured):
+        report.add(PASS, "IMU yaw sign", detail + " They agree.")
+    elif abs(slope) > 0.5:
         report.add(
             FAIL,
             "IMU yaw sign",
-            detail + " The yaw runs opposite to the command.",
-            "Set IMU_YAW_SIGN = -1.0 in labs/lab2/lab2.py and re-run. This run's "
-            "heading fell back to the observation once the guard tripped, so its "
-            "estimate is not the one the fix would produce.",
+            detail + " They disagree.",
+            f"Set IMU_YAW_SIGN = {-configured:+.1f} in labs/lab2/lab2.py and "
+            "re-run. This run's heading fell back to the observation once the "
+            "guard tripped, so its estimate is not the one the fix produces.",
         )
     else:
         report.add(

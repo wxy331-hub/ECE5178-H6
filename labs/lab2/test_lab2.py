@@ -30,19 +30,24 @@ def _load_lab1_dynamics_module():
     return module
 
 
-def test_dynamics_is_identical_to_the_submitted_lab1_model() -> None:
-    """One robot, one model.
+def test_dynamics_equations_match_lab1_under_lab1_parameters() -> None:
+    """Same equations as the submitted model; parameters re-calibrated.
 
-    An earlier revision lowered the Lab 2 gain to 2.47 to compensate for the
-    hardware speed measurement being a command echo.  With the measurement
-    fixed the compensation is wrong, and a filter that disagreed with the
-    submitted m1_2 dynamics would be describing a different robot.
+    instructions.md asks for two things that collide once a Lab 1 parameter is
+    contradicted by measurement: use the Lab 1 motion model, and calibrate the
+    dynamics against the real robot.  The resolution is that the *equations*
+    stay identical -- a filter solving different equations would describe a
+    different robot -- while parameters may be re-estimated, which is what the
+    calibration requirement asks for.
+
+    So this feeds Lab 1's own parameters into Lab 2's dynamics and demands
+    bit-identical output: it pins the equations without freezing the numbers.
+    See test_the_deadband_was_re_estimated_from_hardware for the numbers.
     """
 
     lab1 = _load_lab1_dynamics_module()
-    assert MODEL_CONFIG["speed_gain"] == pytest.approx(
-        lab1.MODEL_CONFIG["speed_gain"]
-    )
+    saved = dict(MODEL_CONFIG)
+    MODEL_CONFIG.update(lab1.MODEL_CONFIG)
     rng = np.random.default_rng(5178)
 
     for _ in range(1000):
@@ -57,9 +62,36 @@ def test_dynamics_is_identical_to_the_submitted_lab1_model() -> None:
         action = np.array(
             [rng.uniform(-0.6, 0.6), rng.uniform(-np.pi, np.pi)]
         )
-        np.testing.assert_array_equal(
-            dynamics(state, action), lab1.dynamics(state, action)
-        )
+        try:
+            np.testing.assert_array_equal(
+                dynamics(state, action), lab1.dynamics(state, action)
+            )
+        except BaseException:
+            MODEL_CONFIG.clear()
+            MODEL_CONFIG.update(saved)
+            raise
+    MODEL_CONFIG.clear()
+    MODEL_CONFIG.update(saved)
+
+
+def test_the_deadband_was_re_estimated_from_hardware() -> None:
+    """Record which parameters diverged from Lab 1, and why.
+
+    Lab 1's deadband of 0.0322 is contradicted twice over: its own run stalled
+    0.0633 m short while still commanding 0.0506 m/s, and at a 0.07 command the
+    encoders read 0.0318 m/s, implying 0.0582.  The gain is untouched, so the
+    two labs still agree on how command maps to speed once the robot moves.
+    """
+
+    lab1 = _load_lab1_dynamics_module()
+    assert MODEL_CONFIG["speed_gain"] == pytest.approx(
+        lab1.MODEL_CONFIG["speed_gain"]
+    )
+    assert MODEL_CONFIG["command_deadband_m_s"] > lab1.MODEL_CONFIG[
+        "command_deadband_m_s"
+    ]
+    assert 0.045 <= MODEL_CONFIG["command_deadband_m_s"] <= 0.065
+    assert MODEL_CONFIG["dt"] > lab1.MODEL_CONFIG["dt"]  # measured 104.5 ms
 
 
 def test_process_jacobian_matches_directional_difference() -> None:
@@ -218,12 +250,19 @@ def test_observation_range_must_cover_the_model_response() -> None:
 
 
 def test_simulated_speed_readings_are_no_longer_clipped() -> None:
+    """Drive at the command cap, not at SCRIPT_SPEED.
+
+    The point is that the observation range has to cover the model's response
+    to the fastest command the hardware accepts.  Testing at the scripted
+    speed instead ties the assertion to the working point: after the deadband
+    was re-estimated, raw 8 settles at 0.14 m/s and the old assertion failed
+    even though nothing about the clipping bug had changed.
+    """
+
+    fastest = np.array([lab2.COMMAND_SPEED_LIMIT, 0.0], dtype=np.float32)
     with lab2.open_sim_env(False) as environment:
         environment.reset(seed=5178)
-        speeds = [
-            float(environment.step(lab2.scripted_action(step, 0.0))[0][3])
-            for step in range(45)
-        ]
+        speeds = [float(environment.step(fastest)[0][3]) for _ in range(45)]
 
     # Under the old range every steady-state reading came back pinned to the
     # limit; the true response has to be observable instead.
@@ -438,22 +477,28 @@ def test_extract_measurement_prefers_the_imu_over_the_heading_echo() -> None:
 def test_echoing_the_command_biases_the_speed_innovation() -> None:
     """Why the encoder matters, reproduced from the filter alone.
 
-    Feeding the 0.10 command back as the measurement while the model predicts
-    the robot's response to that same command leaves a large one-sided
-    innovation instead of zero-mean noise.
+    Feeding a command back as the measurement while the model predicts the
+    robot's response to that same command leaves a one-sided innovation
+    instead of zero-mean noise.  Its size is the gap between command and
+    modelled response, so it scales with the working point -- the assertion is
+    therefore against that gap, not against a fixed multiple of sigma.
     """
 
+    command = lab2.COMMAND_SPEED_LIMIT
+    modelled = MODEL_CONFIG["speed_gain"] * (
+        command - MODEL_CONFIG["command_deadband_m_s"]
+    )
     ekf = EKF(initial_state=np.zeros(4))
-    action = np.array([0.10, 0.0])
+    action = np.array([command, 0.0])
     innovations = []
     for _ in range(80):
         ekf.predict(action)
-        ekf.update(np.array([0.0, 0.10]))  # the command, echoed back
+        ekf.update(np.array([0.0, command]))  # the command, echoed back
         innovations.append(float(ekf.last_innovation[1]))
 
     settled = float(np.mean(innovations[-20:]))
-    assert settled < 0.0
-    assert abs(settled) > np.sqrt(ekf.R[1, 1])
+    assert settled < 0.0  # the echo always reads slower than the response
+    assert abs(settled) > 0.5 * (modelled - command)
 
 
 def test_hardware_run_feeds_the_estimate_back_to_the_robot(

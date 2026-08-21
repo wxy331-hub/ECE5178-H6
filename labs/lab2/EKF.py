@@ -15,15 +15,26 @@ import numpy as np
 # The speed gain must stay equal to Lab 1's so the submitted m1_2 dynamics and
 # this filter describe the same robot; 2.69 is what differentiating the
 # hardware locator track gives (per-leg estimates span 2.42 to 3.42).
+# dt is 0.105, not the 0.1 Lab 1 used: with ThrottledRobot the 2026-08-21 run
+# measured a 104.5 ms control period, and the filter's prediction is only
+# right if dt is the interval that actually elapsed.
 MODEL_CONFIG = {
-    "dt": 0.1,
+    "dt": 0.105,
     "max_speed_m_s": 0.50,
     "speed_gain": 2.69,
     "speed_time_constant_s": 0.216,
     "max_acceleration_m_s2": 1.79,
     "max_deceleration_m_s2": 1.33,
     "max_turn_rate_rad_s": 2.61,
-    "command_deadband_m_s": 0.0322,
+    # Re-estimated from hardware.  Lab 1's 0.0322 is contradicted by two
+    # independent measurements: the lab1 run stalled 0.0633 m short, where the
+    # controller was still commanding 0.80 x 0.0633 = 0.0506 m/s; and at a
+    # 0.07 command on 2026-08-21 the encoders read 0.0318 m/s while moving,
+    # implying 0.07 - 0.0318 / 2.69 = 0.0582.  The old value made the model
+    # predict 0.102 m/s where the robot managed 0.032 -- a 3.2x overestimate
+    # that drove NIS to 64 -- and made a 0.07 command look safe when it is
+    # barely above the point where the robot cannot move at all.
+    "command_deadband_m_s": 0.055,
 }
 
 
@@ -106,7 +117,7 @@ class EKF:
 
     def __init__(
         self,
-        dt: float = 0.1,
+        dt: float = MODEL_CONFIG["dt"],
         initial_state: np.ndarray | None = None,
         initial_covariance: np.ndarray | None = None,
         process_noise: np.ndarray | None = None,
