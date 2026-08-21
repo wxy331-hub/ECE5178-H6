@@ -86,7 +86,7 @@ CSV_COLUMNS = (
 # logs/lab2_diagnostics.csv after the next hardware run.  Deflating it
 # beforehand would be guesswork in the optimistic direction, which is the
 # dangerous one for a consistency metric.
-REAL_PROCESS_NOISE = np.diag([3.125e-5, 3.125e-5, 1.0e-2, 2.5e-5])
+REAL_PROCESS_NOISE = np.diag([3.125e-5, 3.125e-5, 3.0e-3, 2.5e-5])
 
 # Hardware measurement noise, taken from the innovations of the 2026-08-21 run
 # rather than from the simulator's settings.  The heading innovation had a
@@ -103,8 +103,8 @@ REAL_MEASUREMENT_NOISE = np.diag([1.03e-2, 1.08e-3])
 # a slope of -0.97, so the documentation does not hold for this robot.  The
 # guard in ImuHeadingSensor caught it mid-run and fell back to the observation.
 IMU_YAW_SIGN = -1.0
-# A scripted heading step is 90 degrees and the 2.61 rad/s turn limit clears
-# it in six steps, so disagreement past this margin is a sign error rather
+# A scripted heading step is 90 degrees and the 7.5 rad/s turn limit clears
+# it in two steps, so disagreement past this margin is a sign error rather
 # than a turn transient.
 IMU_HEADING_DISAGREEMENT_LIMIT = np.deg2rad(120.0)
 IMU_DISAGREEMENT_PATIENCE = 10

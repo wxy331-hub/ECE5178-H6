@@ -36,7 +36,14 @@ MODEL_CONFIG = {
     "speed_time_constant_s": 0.216,
     "max_acceleration_m_s2": 1.79,
     "max_deceleration_m_s2": 1.33,
-    "max_turn_rate_rad_s": 2.61,
+    # 7.5 rad/s, not Lab 1's 2.61.  The gyroscope on 2026-08-21 read 511 deg/s
+    # at the peak of each turn and the robot cleared 90 degrees in two steps;
+    # integrating the trace gives 87.6 degrees over those two steps, so the
+    # rate that reproduces the timing is 7.5.  At 2.61 the model needed six
+    # steps for a turn the robot finished in two, which left the measured
+    # heading permanently ahead of the prediction -- the +6.7 degree bias in
+    # the heading innovation, previously mistaken for yaw wander.
+    "max_turn_rate_rad_s": 7.5,
     # Solved jointly with speed_gain above.  Lab 1's 0.0322 also disagrees
     # with its own run, which stalled 0.0633 m short while the controller was
     # still commanding 0.80 x 0.0633 = 0.0506 m/s.
