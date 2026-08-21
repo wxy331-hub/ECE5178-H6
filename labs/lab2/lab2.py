@@ -66,32 +66,28 @@ SCRIPT_SPEED = 0.12
 # Geometry of the yellow lane: the straight runs between corners and the
 # corner radius, not the outside dimensions.
 #
-# Estimated from the rulers in the 2026-08-21 photograph.  These are the real
-# dimensions of the lane; the correction for the locator over-reading them
-# lives in LOCATOR_SCALE below, so that this stays a description of the track
-# rather than of the robot's opinion of it.
+# The straights and corner radius of the lane, bracketed by two runs rather
+# than measured directly.  The photograph's rulers suggested 0.31/0.32; at
+# that setting the 12:35 run turned early and cut into the central barrier.
+# Scaling the schedule so the robot instead ran 0.416 m straights put it wide,
+# against the outer wall, and left a trajectory spanning 0.586 m -- which
+# 0.416 + two radii predicts almost exactly, so the locator reports distance
+# honestly and the geometry was what was wrong.  The lane lies between the two
+# attempts, near 0.39.
+#
+# The earlier locator correction is gone.  Its evidence was a locator-to-
+# encoder ratio of 1.29, but the encoders read zero through a stall while the
+# locator still records the slide, so that ratio measures the encoders being
+# low rather than the locator being high.
 #
 # Driving the lane instead of a square removes the pivot that cost the robot
 # its speed at every corner.  A 0.065 m radius at 0.09 m/s needs 1.39 rad/s,
 # which is 8.4 degrees per step against a demonstrated 45 -- the robot turns
 # while still driving, so there is no low-speed window for a high spot to
 # catch.
-TRACK_STRAIGHT_X = 0.31
-TRACK_STRAIGHT_Y = 0.32
+TRACK_STRAIGHT_X = 0.385
+TRACK_STRAIGHT_Y = 0.395
 TRACK_RADIUS = 0.065
-
-# The locator over-reads distance on this surface, so lane progress has to be
-# scaled before it is believed.  Three independent estimates agree: over the
-# 12:35 run the locator integrated 0.980 m against the encoders' 0.834 (1.18),
-# the per-step ratio had a median of 1.32, and the operator saw each straight
-# come up 0.05-0.10 m short, which needs 1.23-1.31.  Taking 1.30 -- the robot
-# turned after 0.24 m of real motion while believing it had done 0.32, cut the
-# corner, and jammed against the central barrier at step 111.
-#
-# This corrects the schedule only.  The EKF still receives the raw locator
-# through the environment, because correcting a measurement to fit a model is
-# how the command echo went unnoticed for a fortnight.
-LOCATOR_SCALE = 1.0 / 1.30
 
 LAB_DIR = Path(__file__).resolve().parent
 CSV_COLUMNS = (
@@ -764,8 +760,11 @@ def run_experiment(
         )
         if previous_position is not None:
             moved = float(np.linalg.norm(position - previous_position))
-            # Simulation reports truth and needs no correction.
-            travelled += moved * (1.0 if robot_env is None else LOCATOR_SCALE)
+            # The locator occasionally jumps; four steps of the 12:47 run
+            # reported 54-70 mm against an encoder reading of 18-27, which no
+            # speed the robot can reach explains.  Cap each step at what the
+            # model's ceiling allows so one bad frame cannot skip a corner.
+            travelled += min(moved, MODEL_CONFIG["max_speed_m_s"] * DT)
         previous_position = position
 
         if render:
