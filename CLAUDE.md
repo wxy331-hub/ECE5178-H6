@@ -21,7 +21,4 @@ Strict — the automarker rejects any deviation.
 `analyze_lab1.py` and `analyze_lab2.py` hold these limits as constants; import
 them rather than restating the numbers.
 
-Lab 1 has been submitted. Its CSV records one specific hardware run, so
-changing `lab1.py` behaviour would fork the code from what produced the marked
-result — comment and documentation edits are fine, logic changes are not
-without saying what it costs. Lab 2 has not been submitted yet.
+
