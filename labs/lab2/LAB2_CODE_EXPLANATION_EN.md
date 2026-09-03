@@ -1,464 +1,409 @@
-# Lab 2 Code Implementation Explained
+# Lab 2 Code Explanation
 
-## 1. Objective
+## 1. Goal and deliverable
 
-Lab 2 uses an Extended Kalman Filter (EKF) to estimate the Sphero position while it follows a repeatable 200-step trajectory. The simulator supplies the comparison ground truth, and the real robot supplies heading and speed measurements during a hardware run.
+Fuse a motion model with the robot's sensors in an Extended Kalman Filter to estimate position over 200 control steps, with a covariance `P` that honestly reflects the real error.
 
-The completed program:
-
-```text
-resets the simulator and robot
-  -> aligns their initial headings
-  -> follows four 50-step sides of a square
-  -> predicts the state with the calibrated motion model
-  -> corrects heading and speed with measurements
-  -> records the posterior position and covariance
-  -> stops the robot and closes Bluetooth after step 200
-  -> writes and validates the automarker CSV
-  -> prints both assessment metrics
-  -> saves the analysis graph
-```
-
-The main files are:
-
-- [`EKF.py`](./EKF.py): motion model and EKF implementation;
-- [`lab2.py`](./lab2.py): experiment, robot connection, trajectory and output;
-- [`analyze_lab2.py`](./analyze_lab2.py): CSV validation, metrics and graph generation;
-- [`test_lab2.py`](./test_lab2.py): offline regression tests.
-
-## 2. State, Control and Measurement Definitions
-
-The EKF state is:
+The run produces the automarker file:
 
 ```text
-x = [position_x, position_y, heading, speed]
+labs/lab2/33377006_lab2.csv
 ```
 
-The control input is:
+200 rows, seven columns: `sim_x, sim_y, real_x, real_y, P_xx, P_xy, P_yy`. The `sim_*` pair is the simulator's ground truth, `real_*` is the EKF's position estimate, and `P_*` are the three independent entries of the position covariance.
+
+Overall flow:
 
 ```text
-u = [speed_command, heading_command]
+parse arguments → build simulator → connect to the real Sphero (hardware mode)
+  → read each initial state → align the simulator's heading
+  → 200 iterations: build action → step both environments
+                    → take measurement → EKF predict → EKF update → record
+  → write CSV → compute marker metrics → save analysis plot → write diagnostic log
 ```
 
-The measurement used by the filter is:
+## 2. Files
 
-```text
-z = [measured_heading, measured_speed]
-```
+| File | Role |
+| --- | --- |
+| `lab2.py` | Main program: trajectory, measurement extraction, experiment loop, CSV output |
+| `EKF.py` | Motion model `dynamics` and the `EKF` class (predict/update) |
+| `analyze_lab2.py` | Validate the CSV, compute marker metrics, draw the analysis plot |
+| `check_run.py` | After a hardware run, check the diagnostic log and say what to change |
+| `calibrate_leg.py` | Measure control period and speed on the robot, size a lane segment |
+| `test_lab2.py` / `test_check_run.py` | Unit tests, 68 in total |
+| `33377006_m2_2.py` | The submitted EKF, self-contained, numpy only |
 
-The raw environment observation may contain position and collision entries, but the EKF deliberately selects only heading and speed. Noisy odometry position is therefore not incorrectly treated as a second independent position sensor.
+## 3. State, control and measurement
 
-The coordinate convention is:
+**State** `x = [x, y, heading, speed]`: position in metres, heading in radians, speed in m/s.
 
-- heading `0 rad` points along `+y`;
-- heading `pi/2 rad` points along `+x`;
-- angles are wrapped into `[-pi, pi)`.
+**Control** `u = [speed_cmd, heading_cmd]`. The second entry is a **desired angle**, not a turn rate.
 
-## 3. Main Experiment Parameters
+**Measurement** `z = [heading, speed]`. Position is **not measured** — and that shapes the filter's behaviour: position can only be propagated by the model, so its uncertainty grows and is never contracted by an observation. This is exactly why Lab 3 needs a position measurement.
 
-The principal constants in [`lab2.py`](./lab2.py) are:
+Coordinate convention, following the supplied environments:
+
+- heading `0` points along `+y`, `π/2` along `+x`;
+- so position integrates as `x += v·sin(θ)·dt`, `y += v·cos(θ)·dt`;
+- and recovering a heading from a position error is `atan2(err_x, err_y)`, with the arguments in the opposite order to the usual `atan2(y, x)`.
+
+## 4. Motion model and calibration
+
+The model lives in `dynamics()` in [`EKF.py`](./EKF.py). Its equations are **identical** to the submitted Lab 1 file `33377006_m1_2.py`; only the constants were re-estimated against the robot. The brief asks both to reuse the Lab 1 motion model and to calibrate against the real robot, and those collide once a Lab 1 constant is contradicted by measurement. The resolution is to keep the **equations** fixed and re-estimate the **constants**, with `test_dynamics_equations_match_lab1_under_lab1_parameters` pinning the equations: it feeds Lab 1's parameters into Lab 2's `dynamics` and demands bit-identical output.
 
 ```python
-DT = 0.1
-N_STEPS = 200
-COMMAND_SPEED_LIMIT = 0.15
-SIM_SPEED_LIMIT = MODEL_CONFIG["max_speed_m_s"]   # 0.50
-RAW_SPEED_LIMIT = 15
+MODEL_CONFIG = {
+    "dt": 0.105,
+    "max_speed_m_s": 0.50,
+    "speed_gain": 1.957,
+    "speed_time_constant_s": 0.216,
+    "max_acceleration_m_s2": 1.79,
+    "max_deceleration_m_s2": 1.33,
+    "max_turn_rate_rad_s": 7.5,
+    "command_deadband_m_s": 0.0537,
+}
 ```
 
-Each experiment therefore lasts approximately 20 seconds. The scripted trajectory commands `0.10 m/s`, while the real robot also has the lower-level safety limit of `15/255`.
+Five stages:
 
-These two speed limits are **different physical quantities**. An earlier revision expressed both with a single `VELOCITY_LIMIT = 0.15`, which introduced a systematic error:
-
-- `COMMAND_SPEED_LIMIT` is the **command cap**. `Robot` also uses it to convert a command into the raw speed byte (`speed_raw = speed_cmd / vel_limit * raw_speed_limit`), so changing it changes how fast the real robot drives. It must stay at `0.15`.
-- `SIM_SPEED_LIMIT` is the **observation range**, i.e. the span the sensor can report. At the scripted `0.10` command the model settles at `2.69 x (0.10 - 0.0322) = 0.182 m/s`, which is 21% above `0.15`, so every simulated speed reading was returned saturated by `np.clip`. The range must cover whatever the model can produce, so it takes the model's own hard ceiling of `0.50`.
-
-After this correction the simulated mean Mahalanobis distance fell from `2.29` to `0.053`, and position RMSE from `2.8 cm` to `3.8 mm`.
-
-## 4. Calibrated Motion Model
-
-The process model retains the nonlinear Lab 1 equations:
-
-- speed-command deadband;
-- first-order motor response;
-- acceleration and deceleration limits;
-- maximum heading rate; and
-- midpoint position integration.
-
-Lab 2 uses exactly the same speed gain as Lab 1:
+**① Turn-rate limit.** Heading may change by at most `max_turn_rate × dt` per step:
 
 ```python
-"speed_gain": 2.69
+heading_step = clip(heading_error, ±max_turn_rate·dt)
 ```
 
-An earlier revision lowered the Lab 2 gain to `2.47` because the simulator square came out systematically larger than the EKF trajectory. **That conclusion has since been shown to be wrong.** The trajectory was short because the hardware speed "measurement" was read from `api.get_speed()`, which returns the commanded target rather than a sensor value (its docstring says "current target speed"), compounded by the observation clipping described above. Lowering the gain merely compensated for those two defects, at the cost of a motion model that no longer described the real robot.
-
-Differentiating the locator track from the 2026-08-14 hardware log recovers the actual gain directly:
-
-| Estimator | Leg 1 | Leg 2 | Leg 3 | Leg 4 | Mean |
-| --- | --- | --- | --- | --- | --- |
-| Per-step speed median | 2.93 | 2.60 | 2.52 | 2.42 | 2.62 |
-| Net leg displacement | 3.42 | 2.53 | 2.72 | 2.60 | 2.82 |
-
-`2.69` lies inside both spreads; `2.47` lies outside them. Once the measurement source and observation range are fixed, the two gains give practically identical simulation metrics (mean Mahalanobis `0.0531` versus `0.0532`), showing that the earlier gap came entirely from clipping rather than from model accuracy. Matching Lab 1 has a second benefit: the submitted `33377006_m1_2.py` and this filter then describe the same robot.
-
-The position update uses midpoint speed and heading:
-
-```text
-x_next = x + speed_mid * sin(heading_mid) * dt
-y_next = y + speed_mid * cos(heading_mid) * dt
-```
-
-This is more accurate than using only the old or new speed while the robot accelerates and turns.
-
-## 5. EKF Prediction
-
-The nonlinear prediction is:
-
-```text
-x_k^- = f(x_(k-1), u_k)
-```
-
-The covariance prediction is:
-
-```text
-P_k^- = F_k P_(k-1) F_k^T + Q
-```
-
-`F_k` is the Jacobian of the motion model. Because the model contains clipping, deadband, rate limits and angle wrapping, [`EKF.py`](./EKF.py) calculates it with a central numerical difference rather than a fragile global symbolic expression.
-
-For state element `i`:
-
-```text
-F[:, i] = (f(x + epsilon_i, u) - f(x - epsilon_i, u)) / (2 * epsilon)
-```
-
-The internal dynamics calculation uses `float64` so that the small Jacobian differences are not lost to `float32` rounding.
-
-## 6. Measurement Model and EKF Update
-
-The measurement model is linear:
-
-```text
-h(x) = [heading, speed]
-```
-
-Its matrix is:
+**② Command deadband.** A speed command below `command_deadband` only makes the robot rock in place. The model subtracts rather than thresholding to zero:
 
 ```python
+effective = max(|speed_cmd| - deadband, 0)
+desired   = sign(speed_cmd) · speed_gain · effective
+```
+
+Subtraction is continuous at the boundary (thresholding produces a jump), matches the physics of overcoming static friction before the remaining power becomes motion, and is differentiable almost everywhere, which suits the EKF's numerical Jacobian.
+
+**③ First-order speed response.** The motors take time to reach the target:
+
+```python
+first_order = speed + (1 - exp(-dt/τ))·(desired - speed)
+```
+
+**④ Acceleration and deceleration limits.** Different ceilings (1.79 / 1.33 m/s²) because the robot accelerates faster than it brakes. Within this experiment's command range this stage rarely engages; it guards larger commands.
+
+**⑤ Midpoint integration.** Position uses the midpoint heading and the mean speed:
+
+```python
+heading_mid = heading + 0.5·heading_step
+speed_mid   = 0.5·(speed + speed_new)
+x_new = x + speed_mid·sin(heading_mid)·dt
+```
+
+While turning and accelerating at once, integrating from the start state underestimates the displacement and from the end state overestimates it; the midpoint is second-order accurate.
+
+### Where the parameters come from
+
+| Parameter | Evidence |
+| --- | --- |
+| `speed_gain` = 1.957<br>`command_deadband` = 0.0537 | These are the slope and x-intercept of one line `v = k(u − u₀)`, so **a single working point cannot separate them**. Solved from two measured points: raw 7 → 0.0318 m/s and raw 10 → 0.0905 m/s, both of which the fit passes through exactly. |
+| `max_turn_rate` = 7.5 rad/s | From the gyroscope: 511 °/s at the peak of a turn, integrating to 87.6° over two steps — the robot clears 90° in two. Lab 1's 2.61 needs six, which left the measured heading permanently ahead of the prediction. |
+| `dt` = 0.105 | The control period actually achieved, 104.9 ms. The prediction is only correct when `dt` is the interval that really elapsed. |
+
+Commands are quantised on the way to the robot: `raw = int(speed_cmd / 0.15 × 15)`, only the 16 integers 0–15, so **command resolution is 0.01 m/s**. The deadband 0.0537 falls between raw 5 and 6, which shows it is a fitted intercept rather than a directly observable threshold; its real uncertainty is about ±0.01.
+
+## 5. EKF prediction
+
+The prediction step advances state and covariance by one period:
+
+```text
+x⁻ = f(x, u)
+P⁻ = F·P·Fᵀ + Q
+```
+
+`f` is `dynamics` above. `F` is its Jacobian, obtained by **central difference**:
+
+```python
+F[:, j] = (f(x + εeⱼ, u) − f(x − εeⱼ, u)) / (2ε)
+```
+
+The model contains clipping, a deadband, rate limits and angle wrapping, which make a single global analytic Jacobian error-prone — and a numerical one stays correct after the constants are re-calibrated. The angular component is wrapped before differencing so a crossing of ±π cannot corrupt the derivative.
+
+## 6. Measurement model and update
+
+The measurement model is linear: the filter observes heading and speed only.
+
+```python
+h(x) = [wrap(heading), speed]
 H = [[0, 0, 1, 0],
      [0, 0, 0, 1]]
 ```
 
-The update equations are:
+Update:
 
 ```text
-innovation:  nu = z - h(x^-)
-innovation covariance: S = H P^- H^T + R
-Kalman gain: K = P^- H^T S^-1
-posterior state: x = x^- + K nu
+ν = z − h(x⁻)          (the heading component wrapped to [−π, π))
+S = H·P⁻·Hᵀ + R
+K = P⁻·Hᵀ·S⁻¹
+x = x⁻ + K·ν
 ```
 
-The heading innovation is wrapped into `[-pi, pi)`. This prevents a measurement just below `-pi` and a prediction just below `+pi` from being interpreted as an almost `2*pi` error.
+The gain is obtained with `np.linalg.solve` rather than an explicit inverse, which is numerically better behaved.
 
-The code solves the linear system for the Kalman gain rather than explicitly calculating `S^-1`, which is numerically safer.
+### 6.1 Where the measurements come from (the heart of this lab)
 
-### 6.1 Where the measurement comes from (hardware differs from simulation)
+**In simulation** the observation is ground truth plus Gaussian noise — a legitimate measurement, used as-is.
 
-`extract_measurement()` in `lab2.py` decides where `z` comes from, which matters most on hardware.
+**On hardware, neither the heading nor the speed in the observation vector is a measurement.** `api.get_speed()` and `api.get_heading()` return the internal variables the last `set_speed()` / `set_heading()` wrote — the **command echoed straight back**. Feeding that to the filter makes it chase its own input: the innovation stops being zero-mean noise and becomes the constant offset between the command and the model's response to that command.
 
-**Simulation**: the observation is ground truth plus Gaussian noise, so it is already a legitimate measurement and `obs[2:4]` is used directly.
+Hardware therefore uses two real sensors instead:
 
-**Hardware**: speed is taken from `info["velocity"]` (the motor encoders) instead of the observation, because both of the obvious `sphero_unsw` accessors only echo commands back:
+**Speed — wheel encoders.** `robot_speed_measurement()` reads `info["velocity"]`:
 
 ```python
-def get_speed(self):    # docstring: "current target speed"
-    return self.__speed         # whatever the last set_speed() wrote
-def get_heading(self):  # docstring: "target directional angle"
-    return self.__heading       # whatever the last set_heading() wrote
+speed = hypot(vx, vy) / 100.0     # the API reports cm/s
 ```
 
-The 200-step hardware log from 2026-08-14 confirms this directly: its `speed` column equals `speed_cmd` in all 200 rows and only ever takes the single value `0.10`, while `heading` differs from `heading_cmd` by at most `1.745e-02 rad`, which is exactly the 1 degree lost to `int(degrees(...))`.
+Only the magnitude is used: the wrapper documents `x`/`y` as right/forward but does not say whether that frame is the body or the world one, and the magnitude is the same either way; the sign comes from the command, which is unambiguous. A missing frame returns `None` and falls back to the observation, so a dropped packet degrades the measurement instead of injecting `NaN` or stalling the filter.
 
-Feeding a command echo back as a measurement makes the filter correct itself with its own input. The model predicted a steady-state speed of `0.182 m/s` against a "measurement" fixed at `0.10 m/s`, so the speed innovation sat permanently at `-0.082 m/s` — more than three times the assumed measurement sigma of `0.025`, and a constant bias rather than the zero-mean noise an EKF assumes.
+**Heading — IMU yaw.** `ImuHeadingSensor` reads `info["orientation"]["yaw"]`, a gyroscope-derived attitude (the brief lists the gyroscope among the measurements available on the real robot). Two things about it were unknown:
 
-Only the magnitude `hypot(vx, vy)` of the encoder velocity is used: the API documents `x`/`y` as right and forward but never states whether that frame is the body or the world one, and the magnitude is identical either way. The sign is taken from the command, where there is no ambiguity. If a dropped BLE frame leaves the field missing, the function falls back to the observation rather than admitting a `NaN` into the filter.
+- **The zero point is removed exactly, with no assumption.** The absolute yaw is never used; the first reading becomes a reference and only differences from it are taken. Where the IMU's own origin sits cannot affect the result.
+- **The sign has to be assumed, but a wrong guess is detectable and recoverable.** `IMU_YAW_SIGN = -1.0`, fixed from hardware data: regressing the measured yaw against the commanded heading gives a slope of −0.99, so the documented clockwise-positive convention does not hold for this robot. A wrong sign puts the measured heading roughly **180° from the command and keeps it there**, whereas a genuine turn transient peaks at 90° and decays within six steps. The gap between those cases is clean, so the guard uses a **120° threshold with a patience of 10 consecutive steps**: on sustained disagreement it prints a warning, disables the IMU source and falls back to the observation. A wrong guess costs one warning, not the run.
 
-**Heading comes from the IMU yaw**, supplied by `ImuHeadingSensor`. The docstring for `get_orientation()` states that yaw is measured by the gyroscope, and instructions.md explicitly lists the gyroscope as a hardware measurement, so this is the intended source.
+## 7. Covariance update and numerical stability
 
-Using it required resolving two unknowns, only one of which needed an assumption:
-
-- **The zero point is cancelled exactly, with no assumption.** The filter never uses the absolute yaw; the first frame is stored as a reference and only differences from it are used, so wherever the IMU's own origin sits is irrelevant.
-- **The sign has to be assumed.** `set_heading()` and the IMU yaw are both documented as increasing clockwise seen from above, so `IMU_YAW_SIGN = +1` is the expected value — but it has never been measured on this robot.
-
-What makes that assumption safe is that a wrong guess is **detectable and recoverable**. A mirrored sign puts the measured heading roughly 180 degrees from the commanded one and keeps it there for a whole leg (50 steps), whereas a genuine turn transient peaks at 90 degrees (every scripted heading step is 90 degrees) and decays within six steps at the `2.61 rad/s` turn limit. The gap between those two cases is clean, so `ImuHeadingSensor` uses a 120 degree threshold with a patience of 10 consecutive steps: on sustained disagreement it prints a warning, disables the IMU source and falls back to the observation. A wrong guess therefore costs one warning rather than the whole run.
-
-The diagnostic log records both the raw `imu_yaw_deg` and the `z_heading` actually fed to the filter, so comparing them against `heading_cmd` after a run confirms the sign.
-
-## 7. Covariance Update and Stability
-
-The posterior covariance uses the Joseph form:
-
-```text
-P = (I - KH) P^- (I - KH)^T + K R K^T
-```
-
-The Joseph form better preserves symmetry and positive semidefiniteness under floating-point arithmetic than the short form `(I-KH)P`.
-
-After prediction and update, the covariance is symmetrised and any tiny negative eigenvalue caused by numerical roundoff is lifted to a small positive floor. The CSV analyzer independently rejects any position covariance that is not positive definite.
-
-## 8. Noise Matrices
-
-The simulation process noise is:
+The covariance uses the **Joseph form**:
 
 ```python
-Q = diag([3.125e-6, 3.125e-6, 1.0e-4, 2.5e-5])
+P = (I − K·H)·P·(I − K·H)ᵀ + K·R·Kᵀ
 ```
 
-The real experiment uses larger position process noise:
+One term more than the common `P = (I − K·H)·P`, but it stays symmetric and positive-definite even when `K` is not exactly the optimal gain — and with `Q` and `R` hand-tuned, `K` is not.
+
+After every predict and update a further stabilisation runs:
 
 ```python
-Q_real = diag([3.125e-5, 3.125e-5, 1.0e-4, 2.5e-5])
+P = symmetrise(P), then clamp eigenvalues to ≥ 1e-12
 ```
 
-This represents unmodelled hardware motion, surface variation and sim-to-real residuals. It prevents the real filter from being unrealistically confident.
+This stops accumulated floating-point error from costing positive-definiteness over a long run, which would fail the marker's minimum-eigenvalue check.
 
-The measurement noise is:
+## 8. Noise matrices
+
+Initial covariance: the robot starts from a known origin, so position is nearly certain while heading and speed carry a little more doubt.
 
 ```python
-R = diag([0.025^2, 0.025^2])
+P₀ = diag(1e-6, 1e-6, 6.25e-4, 6.25e-4)
 ```
 
-The initial covariance is:
+Simulation and hardware use **different** noise matrices, because their noise has different sources:
+
+| | Simulation | Hardware |
+| --- | --- | --- |
+| `Q` | `diag(3.125e-6, 3.125e-6, 1e-4, 2.5e-5)` | `REAL_PROCESS_NOISE = diag(3.125e-5, 3.125e-5, 3.0e-3, 2.5e-5)` |
+| `R` | `diag(6.25e-4, 6.25e-4)` | `REAL_MEASUREMENT_NOISE = diag(1.03e-2, 1.08e-3)` |
+
+**The hardware `R` has a heading term 16 times the simulator's**, because it is taken from the measured innovations: the heading innovation has a standard deviation of 0.10 rad against the simulator's assumed 0.025. The difference is that the IMU reading carries the robot's real yaw wander on uneven floor, not only sensor noise.
+
+**The hardware `Q` opens its heading term to 3e-3** to absorb the same disturbance. The value is not arbitrary: replaying the hardware log offline while sweeping `Q` shows that raising it further makes the estimate trust the measurement too much and follow the disturbance, which makes the marker metric worse rather than better.
+
+## 9. Trajectory: one lap of the yellow lane
+
+The arena is a rounded-rectangle track with a barrier in the middle, so the trajectory follows the painted lane:
 
 ```python
-P0 = diag([1e-6, 1e-6, 6.25e-4, 6.25e-4])
+TRACK_STRAIGHT_X = 0.385     # long straight
+TRACK_STRAIGHT_Y = 0.395     # short straight
+TRACK_RADIUS     = 0.065     # corner radius
+TRACK_LAP        = 1.968     # lap length (computed)
 ```
 
-Position starts near zero uncertainty because both systems are reset at a known origin. Heading and speed begin with greater uncertainty.
+The lane is described as eight `(arc length, heading change)` segments, and `track_heading(distance)` returns the tangent direction at that arc length: straights hold their heading, corners turn linearly with distance — which is what a constant-radius turn at constant speed does.
 
-## 9. The 200-Step Square Trajectory
+**Why not a square.** A square demands 90° within a single step. The robot obeys by pivoting at 511 °/s, which costs nearly all its forward speed and takes about two steps to rebuild. Eight of the ten near-motionless steps in a measured run fell inside that window — a high spot met while the robot is at low speed stops it outright. A 0.065 m corner at 0.09 m/s needs 1.39 rad/s, i.e. **8.4° per step against a demonstrated 45°**, so the robot turns while still driving and no low-speed window opens at all.
 
-The default scripted action divides the experiment into four equal legs:
+### 9.1 Driven by measured distance, not by the clock
 
-| Steps | Heading relative to start | Motion direction |
-| ---: | ---: | --- |
-| `1-50` | `0` | straight forward along the initial `+y` direction |
-| `51-100` | `pi/2` | right side |
-| `101-150` | `pi` | backward side |
-| `151-200` | `-pi/2` | left side back toward the origin |
+`scripted_action(travelled, initial_heading)` takes the **distance actually covered**, not `step × speed × dt`.
 
-Each leg uses:
+The two diverge whenever the robot fails to move. An earlier version ran on the clock, so while the robot sat pinned against a high spot the schedule kept advancing: the corner was commanded after 0.219 m of real motion instead of the 0.32 m straight, cutting 0.10 m inside the lane and into the central barrier.
+
+With measured displacement, **a stall costs time but not lane position** — the robot resumes the corner exactly where it left off. The source is the locator on hardware (which reports nothing while stuck) and the simulator's own truth in simulation, so both environments follow a single schedule.
+
+Each step's displacement is also capped:
 
 ```python
-action = np.array([0.10, heading], dtype=np.float32)
+travelled += min(moved, max_speed × dt)     # ceiling 52 mm
 ```
 
-The simulator heading is aligned with the robot's reset heading before motion starts. There is no separate calibration movement and no command toward `(0.5, 0.5)`.
+The locator occasionally jumps: one run reported 54–70 mm on four steps against encoder readings of 18–27 mm, which no speed the robot can reach explains. One such frame inside a corner skips part of the turn, and that run's 180° and 270° marks duly arrived 0.35 m late. When the reading is honest the cap costs nothing.
 
-## 10. Predict/Update Timing
-
-Each control cycle performs:
-
-1. select the scripted or teleoperation action;
-2. step the simulator;
-3. step the real robot when connected;
-4. call `ekf.predict(action)`;
-5. call `ekf.update(measurement)`;
-6. send the posterior estimate and covariance to the renderer;
-7. save one CSV record; and
-8. wait for the next absolute `0.1 s` tick.
-
-The timing code is:
+### 9.2 Stop after one lap
 
 ```python
-next_tick += DT
-time.sleep(max(0.0, next_tick - time.monotonic()))
+completed = travelled >= TRACK_LAP
+speed = 0.0 if completed else SCRIPT_SPEED
 ```
 
-Using an absolute monotonic deadline limits accumulated timing drift.
+How far 200 steps carry the robot depends on the stall rate — about 1.1 laps when it runs clean, 0.7 at a 37% stall rate — so **no choice of speed fixes the lap count**. Deciding at the finish line does: hold still once the lap closes. The brief asks for 200 steps of **data**, not 200 steps of **driving**; and standing still is not wasted on the filter — it is the state the filter should predict best, and measured Mahalanobis distance over the stationary section is lower than over the moving one.
 
-## 11. Visualisation Lines
+The commanded speed is `SCRIPT_SPEED = 0.12` (raw 12), 4.6 counts above the re-estimated deadband of 0.0537, which leaves margin against being stopped by a high spot.
 
-The animation uses:
+## 10. Control period and Bluetooth throttling
 
-- green: simulator ground truth;
-- blue: noisy simulator odometry;
-- magenta: EKF posterior estimate.
+`ThrottledRobot` subclasses the framework's `Robot` and overrides one method:
 
-The green and magenta paths are the important comparison for assessment. The uncertainty circle/ellipse is derived from the EKF position covariance. The yellow point is the environment goal marker and does not control the scripted square trajectory.
+```python
+def set_heading_and_speed(self, heading_deg, speed):
+    with self._lock:
+        if int(heading_deg) != self._last_heading_deg:
+            self.api.set_heading(int(heading_deg))
+            self._last_heading_deg = int(heading_deg)
+        self.api.set_speed(int(clip(speed, 0, 255)))
+```
 
-## 12. CSV Output
+The reason is in the underlying API: `set_heading()` and `set_speed()` both end in the **same** `roll_start(heading, speed)` command, and the one from `set_heading()` carries the **previous** speed, so it is overwritten by the second a full Bluetooth round trip later. When the heading has not changed that write buys nothing — and on the great majority of steps it has not.
 
-The automarker filename is:
+Removing it took the control period from **209 ms to 104.9 ms**, which directly determines the filter's correctness: `EKF` predicts displacement from `dt`, so a period off by a factor of two means a predicted displacement off by a factor of two.
+
+Not one byte of `src/sphero_env/` changed; this only overrides a public method.
+
+## 11. What happens in one step
 
 ```text
-<student-id>_lab2.csv
+1. build the action        scripted_action(travelled, initial_heading)
+2. step the simulator      sim_env.step(action)
+3. step the robot          robot_env.step(action)        (hardware mode)
+4. take the measurement    extract_measurement(...)      → [heading, speed]
+5. EKF predict             ekf.predict(action)
+6. EKF update              ekf.update(measurement)
+7. push the estimate back  update_estimate(...)          (for plots and logs)
+8. record a submission row sim truth + EKF estimate + P
+9. record a diagnostic row 26 columns of raw sensors and filter internals
+10. advance the lane       travelled += min(moved, cap)
+11. wait for the next tick perf_counter pacing
 ```
 
-It contains exactly 200 rows and seven columns:
+Step 11 uses `perf_counter` rather than `monotonic`: the latter resolves to 15.625 ms on this machine, 16% of a control period, which would swamp the very jitter being measured.
+
+Simulation and hardware **receive the same action** but evolve independently: the simulator supplies the ground-truth trajectory the marker scores against, the robot supplies the measurements.
+
+## 12. CSV output and marking
+
+Writing goes to a temporary file and is then atomically replaced, so a failure part way through cannot truncate a previously valid submission. Row count, column count and finiteness are checked before the write.
+
+Marker metrics (thresholds are constants in `analyze_lab2.py`, imported rather than restated):
+
+| Metric | Threshold |
+| --- | --- |
+| Mean squared Mahalanobis distance of the position error | ≤ 4.0 |
+| Chi-square pass rate (2 DoF, 95% gate) | ≥ 0.90 |
+
+The Mahalanobis distance measures how large the estimation error is *relative to the uncertainty the filter claims*:
 
 ```text
-sim_x,sim_y,real_x,real_y,P_xx,P_xy,P_yy
+d² = (x_sim − x_est)ᵀ · P⁻¹ · (x_sim − x_est)
 ```
 
-Here, `real_x` and `real_y` mean the EKF mean position estimate, not raw position odometry. `P_xx`, `P_xy` and `P_yy` reconstruct the symmetric posterior position covariance:
+It penalises both failure modes at once — an inaccurate estimate (large numerator) and an overconfident covariance (small denominator).
 
-```text
-P_position = [[P_xx, P_xy],
-              [P_xy, P_yy]]
+`analyze_lab2.py` also saves an analysis figure: trajectory comparison, 95% confidence ellipses, pointwise error and the NIS series. Following the brief's tuning guide, the NIS plot carries **both** chi-square bounds: above the upper bound means the filter is overconfident (raise `Q` or `R`), below the lower bound means it is too conservative.
+
+## 13. Diagnostic and calibration tools
+
+**`check_run.py`** — run it after a hardware session:
+
+```bash
+python labs/lab2/check_run.py
 ```
 
-The program validates the row count, shape and finite values before atomically replacing the final CSV.
+The marker metrics say whether the filter was self-consistent; they **cannot say whether it was fed real sensors**. A run can pass both thresholds with the speed "measurement" still being the command echoed back. This script answers that directly by replaying `ImuHeadingSensor`'s arithmetic against the logged raw yaw and comparing it with what actually reached the filter, and it prints a specific fix for every failed check.
 
-## 13. Assessment Metrics
+Checks: run length, control period, speed sourced from the encoders, heading sourced from the IMU, IMU sign against the configured constant, systematic innovation bias, and filter consistency.
 
-For each step, the position error is:
+**`calibrate_leg.py`** — hardware calibration:
 
-```text
-e_k = simulator_position_k - EKF_position_k
+```bash
+python labs/lab2/calibrate_leg.py --target-leg 0.40
 ```
 
-The squared Mahalanobis distance is:
+Segment length is speed × steps × period, and two of those three are properties of the robot and the Bluetooth link rather than choices. The script runs in two phases: it times the period with the robot commanded to **zero speed and standing still** (the period is a software quantity and needs no floor space), then measures speed over a short straight, and prints the step count for a target segment.
 
-```text
-d_k^2 = e_k^T P_position_k^-1 e_k
-```
+## 14. Safety and fault handling
 
-The two assessed conditions are:
+- both environments are wrapped in `try/finally`, calling `emergency_stop()` before closing on any exception;
+- known transient Windows Bluetooth failures are retried 3 times at 3-second intervals, and no motion command is sent before the link is up;
+- the hardware context exits immediately after step 200, closing Bluetooth before the `--hold` visualisation begins;
+- the diagnostic log is written **even on an abort** — a run that had to be stopped is exactly the one whose sensor trace is worth reading. A failure there is deliberately swallowed, because raising from a `finally` block would replace the exception already propagating (a dropped Bluetooth link, say) and disguise the real fault as a disk error.
 
-| Metric | Required threshold |
-| --- | ---: |
-| Mean squared Mahalanobis distance | `<= 4.0` |
-| Fraction inside the 2-DoF 95% chi-square gate | `>= 0.90` |
-
-A high statistic means the filter is overconfident: the actual error is larger than its covariance predicts. A consistently very low statistic can mean the filter is unnecessarily pessimistic.
-
-## 14. Automatic Analysis Graph
-
-After every successful run, the program saves:
-
-```text
-<student-id>_lab2_analysis.png
-```
-
-The graph contains:
-
-1. simulator ground truth and EKF position trajectories; and
-2. the stepwise squared Mahalanobis statistic with the 95% chi-square threshold.
-
-[`analyze_lab2.py`](./analyze_lab2.py) also reports position RMSE and the minimum covariance eigenvalue as diagnostics, although these two values are not the published pass/fail thresholds.
-
-## 15. Robot Stop, Bluetooth and Logging
-
-The real environment is protected by context managers and `finally` blocks. After step 200, the program:
-
-```text
-calls emergency_stop
-  -> stops diagnostic logging
-  -> closes the Robot object
-  -> exits SpheroEduAPI
-  -> releases the Bluetooth connection
-  -> optionally keeps only the simulator window open
-```
-
-Therefore `--hold` does not keep the physical robot connected. Closing the window or pressing `Q` is only required to close the final simulator view.
-
-There are two logs:
-
-```text
-logs/lab2_robot.csv         written by the framework Visualiser: trajectory and commands
-logs/lab2_diagnostics.csv   written by DiagnosticLog: raw sensors and filter internals
-```
-
-The diagnostic log records 26 columns per step: a high-resolution timestamp, the speed and heading commands, the observation, encoder `vx/vy`, IMU `yaw`, gyroscope `z`, **the `z_heading` / `z_speed` actually fed to the filter**, odometry position, EKF state, both innovations, NIS, and the position covariance. It exists so that **one** hardware run can answer the questions that can only be settled with the robot present: the frame `get_velocity()` reports in, whether `IMU_YAW_SIGN` is `+1`, and the true encoder measurement noise needed to calibrate `R`. Logging the `z_*` values rather than reconstructing them afterwards shows directly whether each step used a sensor or a fallback. It is written even when the run is aborted with `Q` — a run that had to be stopped is exactly the one worth reading.
-
-Timestamps use `time.perf_counter()` rather than `time.monotonic()`. On this machine both `monotonic` and `time` are backed by `GetTickCount64()` with a resolution of `15.625 ms`, which is 16% of the `100 ms` control period: too coarse to measure jitter, and a comparable error source when used to pace the loop. `perf_counter` is backed by `QueryPerformanceCounter()` at `0.1 us`. After the change the measured step interval is `100.00 ms` with a standard deviation of `0.23 ms`.
-
-Generated logs, automarker CSV files and analysis PNG files are excluded from Git (`logs/.gitignore` contains `*`).
-
-## 16. Commands
-
-Simulation with animation:
+## 15. Commands
 
 ```powershell
-.\.venv\Scripts\python.exe .\labs\lab2\lab2.py --sim --student-id 33377006
+# simulation only
+python labs\lab2\lab2.py --sim --no-render --student-id 33377006
+
+# with the real robot
+python labs\lab2\lab2.py --student-id 33377006
+
+# check the run that just finished
+python labs\lab2\check_run.py
+
+# validate the submission file
+python labs\lab2\analyze_lab2.py labs\lab2\33377006_lab2.csv
+
+# full test suite
+python -m pytest
 ```
 
-Simulation without animation:
+⚠️ Simulation and hardware write the same CSV and the same diagnostic log, so **running the simulator overwrites a hardware result**. Copy `33377006_lab2.csv` and `logs/lab2_diagnostics.csv` aside after a hardware run.
 
-```powershell
-.\.venv\Scripts\python.exe .\labs\lab2\lab2.py --sim --no-render --student-id 33377006
-```
+## 16. Verified results
 
-Real robot, stopping Bluetooth after 200 steps and holding the final graph window:
+**Hardware (2026-08-21, raw 12, one lap over 200 steps):**
 
-```powershell
-.\.venv\Scripts\python.exe .\labs\lab2\lab2.py --student-id 33377006 --hold
-```
+| Item | Result |
+| --- | --- |
+| Mean squared Mahalanobis distance | **0.8732** (≤ 4.0) PASS |
+| Chi-square pass rate | **1.000** (≥ 0.90) PASS |
+| Position RMSE | 0.0514 m |
+| Control period | 104.9 ms |
+| Sensor checks | encoder speed, IMU heading and IMU sign all pass |
 
-Validate an existing CSV and generate a graph:
+**Simulation:** mean Mahalanobis distance 0.0546, chi-square pass rate 1.000.
 
-```powershell
-.\.venv\Scripts\python.exe .\labs\lab2\analyze_lab2.py .\labs\lab2\33377006_lab2.csv --plot
-```
+**Offline replay (the same hardware log, used to verify each calibration step):**
 
-Run the Lab 2 tests:
+| Parameters | Mean NIS | Inside gate | Trajectory RMSE |
+| --- | --- | --- | --- |
+| Before calibration | 34.9 | 2% | 0.239 m |
+| Two-point `gain`/`deadband` | 33.4 | 3% | 0.162 m |
+| Plus `R` from measured variance | 4.0 | 90% | 0.172 m |
+| Plus corrected turn rate, `Q` reduced | **2.04** | **96%** | **0.156 m** |
 
-```powershell
-.\.venv\Scripts\python.exe -m pytest .\labs\lab2\test_lab2.py -q
-```
+The theoretical value is 2.0 for 2 degrees of freedom. Each correction treats a different fault: `gain`/`deadband` the prediction bias, `R` an underestimated measurement noise, `max_turn_rate` a systematic lag in heading.
 
-## 17. Verified Results
+**Tests:** 68 passing.
 
-Simulation verification (`seed=5178`, after correcting the observation range and the measurement source):
+## 17. Submitted artefacts
 
-| Metric | Result | Status |
-| --- | ---: | --- |
-| Mean squared Mahalanobis distance | `0.0246` | PASS |
-| Chi-square pass rate | `1.000` | PASS |
-| Position RMSE | `0.0026 m` | diagnostic |
-| Mean NIS | `2.006` | theoretical value for 2 DoF is `2.0` |
+| File | Description |
+| --- | --- |
+| `33377006_lab2.csv` | 200 marked rows, produced by a hardware run |
+| `33377006_m2_2.py` | The EKF as one self-contained file |
+| `commit_history.txt` | `git log` export |
 
-Before and after, averaged over seeds `5178 / 1 / 42`:
-
-| Revision | Mean Mahalanobis | Position RMSE |
-| --- | ---: | ---: |
-| Observation range `0.15`, gain `2.47` | `0.8725` | `0.0172 m` |
-| Observation range `0.15`, gain `2.69` | `2.2868` | `0.0279 m` |
-| Observation range `0.50`, gain `2.47` | `0.0532` | `0.0038 m` |
-| Observation range `0.50`, gain `2.69` (current) | `0.0531` | `0.0038 m` |
-
-The last two rows are effectively identical, showing that once clipping is removed the gain no longer drives simulation consistency. `2.47` previously looked better only because its steady-state speed sat closer to the saturated range limit.
-
-Latest hardware CSV verification (`33377006_lab2.csv`):
-
-| Metric | Result | Status |
-| --- | ---: | --- |
-| Data rows | `200` | PASS |
-| Mean squared Mahalanobis distance | `1.9720` | PASS |
-| Chi-square pass rate | `1.000` | PASS |
-| Position RMSE | `0.0779 m` | diagnostic |
-| Minimum covariance eigenvalue | `3.22515e-05` | positive |
-
-**Note**: this hardware CSV was recorded on 2026-08-14, before the corrections above; its speed measurement is still a command echo and its gain is still `2.47`. It continues to satisfy both published thresholds, but it does not represent the current code on hardware. Until the robot is run again, the hardware behaviour of the current code is unmeasured.
-
-The offline regression suite contains 25 tests and passes completely (`pytest test_lab2.py`). The latest hardware square was also visually confirmed to have closely aligned green and magenta trajectories.
+The constants in `33377006_m2_2.py` are those of the run that produced the CSV — replaying that run's log through the file reproduces every `real_x`, `real_y` and `P_xx` with a difference of `0.000e+00`.
 
 ## 18. Summary
 
-The completed Lab 2 implementation combines:
-
 ```text
-calibrated nonlinear Lab 1 motion model
-+ numerical-Jacobian EKF prediction
-+ heading and speed measurement correction
-+ stable Joseph covariance update
-+ calibrated simulation and hardware noise
-+ safe repeatable 200-step square motion
-+ exact automarker CSV and consistency metrics
-+ automatic trajectory/chi-square graph
-+ robot stop, BLE cleanup and diagnostic logging
+the Lab 1 motion model (equations fixed, constants re-estimated on hardware)
++ an EKF with a numerical Jacobian (Joseph-form covariance, eigenvalue clamping)
++ real sensor measurements (encoder speed, IMU heading, both with dropped-frame fallback)
++ separate noise matrices for simulation and hardware
++ a rounded-lane trajectory driven by measured displacement, stopping after one lap
++ Bluetooth throttling taking the control period from 209 ms to 105 ms
++ a 26-column diagnostic log and an automatic checker
++ 68 unit tests
 ```
 
-This provides a reproducible localisation baseline that can later be extended to circles, triangles, figure-eight paths and Lab 3 navigation.
+One principle runs through the whole implementation: **a measurement must come from a real sensor, and the model must describe the real robot.** A consistency metric can always be "fixed" by inflating the covariance, but that only makes the filter admit it is inaccurate. The real improvements came from replacing the command echo with the encoders, the assumed turn rate with the gyroscope, and a clock-driven trajectory with a distance-driven one.
