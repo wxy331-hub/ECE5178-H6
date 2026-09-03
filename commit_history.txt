@@ -1,453 +1,107 @@
-commit eef50cb38368808886e3a4e0e45dc363e72e252b
+commit c35e19bcce442c9e3cfcfa4b9e1c26cb02c4d1ed
+Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
+Date:   Thu Sep 3 16:38:23 2026 +1000
+
+    Add the M2-2 function file and update the commit history
+
+commit 613aa6660e453f2cebdc3b0f7c02fac1d055e29b
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
 Date:   Thu Sep 3 16:32:26 2026 +1000
 
-    Plot NIS against both chi-square bounds, as the brief asks
-    
-    instructions.md's tuning guide asks for NIS plotted against the theoretical
-    chi-square upper *and lower* bounds, and reads all three cases: above means
-    overconfident, below means sluggish, inside means calibrated. The repository
-    plotted neither. analyze_lab2 draws the squared Mahalanobis distance of the
-    position error with a single 95% line -- that is the marked metric, and it is
-    a different quantity from NIS, which measures the innovation against S.
-    
-    check_run.py now writes logs/lab2_nis.png with the two-sided 95% band. For
-    2 degrees of freedom the chi-square CDF is 1 - exp(-x/2), so the quantiles
-    are -2*ln(1-p) exactly: [0.0506, 7.3778]. The consistency check reports the
-    fraction above and below as well as the single-sided gate, which is what
-    tells an optimistic filter from a pessimistic one.
-    
-    On the 12:47 run: 40% high, 2% low -- overconfident, consistent with the
-    mean NIS of 6.34, and pointing at Q and R rather than at a bias.
+    Plot NIS against the chi-square bounds
 
-commit b4cb364316b494873056c866b95c3df4984265af
+commit 837e199bba000bcc31aef53e3b0398a49d0ebfd2
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
 Date:   Fri Aug 21 12:56:40 2026 +1000
 
-    Fix the lane geometry; the locator was honest after all
-    
-    The previous commit blamed the locator for over-reading and scaled the
-    schedule by 1/1.30. The 12:47 run shows that was wrong, and the trajectory
-    itself is the evidence: the schedule drove 0.32/0.769 = 0.416 m straights,
-    and 0.416 plus two corner radii predicts a 0.546 m span against 0.586 m
-    measured. A locator inflating distance by 30% could not produce a path that
-    size. It reports honestly.
-    
-    What misled the diagnosis was a locator-to-encoder ratio of 1.29. The
-    encoders read zero through a stall while the locator still records the slide,
-    so that ratio measures the encoders reading low, not the locator reading
-    high. Two quantities disagreeing does not say which one is wrong.
-    
-    The geometry was what was wrong, and the two runs bracket it: at 0.32 m
-    straights the robot cut the corner into the central barrier, at 0.416 m it
-    ran wide against the outer wall. 0.385/0.395 sits between them and matches
-    the operator's original report that each straight finished 0.05-0.10 m short
-    of the paint.
-    
-    Kept from that commit: a cap on single-step displacement. Four steps of the
-    12:47 run reported 54-70 mm of locator movement against encoder readings of
-    18-27 mm, which no speed the robot can reach explains. One such frame inside
-    a corner skips part of the turn, and the run showed exactly that -- the 180
-    and 270 degree marks arrived 0.35 m late. Clipping each step to the model's
-    ceiling costs nothing when the reading is honest.
-    
-    That run passed the marker regardless: Mahalanobis 0.873, chi-square 1.000.
+    Correct the lane straight lengths
 
-commit fab7fb52fedce6065fba1476fd5785f177a1ac8c
+commit ff4fa9ff64958a406f67c4bc897961c0a2d2b6c3
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
 Date:   Fri Aug 21 12:45:07 2026 +1000
 
-    Correct the locator's over-reading; the lane was right, the odometry was not
-    
-    The 12:35 run turned early again despite the schedule now running on measured
-    displacement, and jammed against the central barrier at step 111. The
-    schedule was not at fault: 90 degrees arrived at 0.443 m of reported travel
-    against a predicted 0.422, and 180 at 0.891 against 0.834. What is at fault
-    is the reported travel itself.
-    
-    Three estimates agree that the locator over-reads by about 30% on this
-    surface. Its integral over the run is 0.980 m against 0.834 m from the
-    encoders. The per-step ratio has a median of 1.32. And the operator saw each
-    straight finish 0.05-0.10 m short, which needs 1.23-1.31. Fourteen steps show
-    the encoders turning while the locator does not move at all -- the track is
-    plastic and the robot slips on it.
-    
-    So the robot turned after 0.24 m of real motion while believing it had done
-    the full 0.32 m straight. The lane geometry was never wrong; it goes back to
-    the measured 0.31/0.32/0.065 and the correction sits in LOCATOR_SCALE, where
-    it describes the odometry rather than the track.
-    
-    The correction applies to the schedule only. The EKF still sees the raw
-    locator through the environment: adjusting a measurement to fit a model is
-    how the command echo survived a fortnight of runs.
-    
-    Speed goes to raw 12. The track is slower than the floor these parameters
-    were calibrated on -- 0.064 m/s of real motion at raw 10 against a predicted
-    0.091 -- and with 37% of steps stalled, 200 steps covered half a lap. It also
-    gives a second working point on this surface, so the pair (raw 10, raw 12)
-    can re-solve speed_gain and the deadband for the track the way (raw 7,
-    raw 10) did for the floor.
+    Scale the locator distance and cap single-step jumps
 
-commit 269ed25e38e58fa810aa422566315ce2064b58d2
+commit 26835b5bbda2abf448acdc3604a2465e64db7245
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
 Date:   Fri Aug 21 12:30:57 2026 +1000
 
-    Drive the lane by measured distance, and stop after one lap
-    
-    Two faults, both from the same root: the schedule ran on the clock.
-    
-    scripted_action advanced the lane by step * speed * dt, so a robot pinned
-    against a high spot kept "progressing" while standing still. The 12:18 log
-    shows what that costs: the corner was commanded at step 34, where the
-    schedule believed 0.323 m had been covered -- the length of the straight --
-    while the locator had recorded 0.219 m. The robot turned 0.10 m early. The
-    speed model was not at fault; it read 0.0859 m/s against a predicted 0.0906.
-    The stall rate was 33%, and 33% of the schedule went to steps that moved
-    nothing.
-    
-    The lane now advances by measured displacement, from the locator on hardware
-    and from truth in simulation, so a stall costs time but not position: the
-    robot resumes the corner exactly where it left off. A test drives a mock that
-    stalls three steps in ten and asserts both runs trace the same heading-versus-
-    distance curve, which is the property the clock-driven version lacked.
-    
-    Lap count followed from the same confusion. 200 steps cover 1.08 laps when
-    the robot runs clean and 0.72 at the measured stall rate, so no choice of
-    speed fixes it. The robot now holds still once the lap closes: 200 steps of
-    data, one lap of driving, either way. A stationary target is also something
-    the filter ought to predict exactly.
-    
-    The mock robot had to start moving for any of this to be testable -- one that
-    never leaves the origin leaves the lane frozen at its starting heading, which
-    is indistinguishable from a robot stuck against a wall.
+    Advance the lane by measured distance and stop after one lap
 
-commit ea650dffbe41d037c2b98bd16913f76b57a478fb
+commit 01fde145849ed24bd6df3eda0b3d0533e8d3e405
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
 Date:   Fri Aug 21 12:14:23 2026 +1000
 
-    Drive the yellow lane instead of a square
-    
-    The arena photograph shows a rounded-rectangle track with a barrier in the
-    middle, not the open square the trajectory assumed. Following the lane suits
-    the geometry, and it also removes the mechanism behind the stalls: a square
-    demands 90 degrees in one step, the robot pivots at 511 deg/s to obey and
-    loses nearly all its forward speed, and eight of the ten sub-20 mm steps on
-    2026-08-21 fell in the two steps it spent rebuilding that speed. A 0.065 m
-    corner at 0.09 m/s needs 8.4 deg per step against a demonstrated 45, so the
-    robot turns while still driving and no low-speed window opens for a high spot
-    to catch. The ramped-corner workaround added earlier is superseded.
-    
-    Geometry is estimated from the rulers in the photograph: 0.31 and 0.32 m
-    straights, 0.065 m corner radius, giving a 1.67 m lap that spans
-    0.44 x 0.45 m. 200 steps cover 1.14 laps.
-    
-    scripted_action is now parameterised by distance travelled rather than by leg
-    number, so the lane definition is three constants. That distance comes from
-    the model's steady speed, not from a measurement: this is open loop, and a
-    10% speed error becomes a 0.17 m position error over a lap, which is why the
-    run is scoped to about one lap rather than several.
-    
-    Tests replaced accordingly: the lap must close on itself when its own
-    headings are integrated, the span must match the measured track, and no step
-    may demand more than half the turn the robot can deliver. The IMU-tracking
-    test now compares the whole logged sequence rather than the final step --
-    step 200 lands back on a straight where the lane heading is zero, which is
-    exactly what a command echo would produce -- and wraps the difference, since
-    the lane passes through pi at step 88.
+    Follow the yellow lane instead of a square
 
-commit 9cc99d2c2e9193210c434f4b760d5eb85b35eb64
+commit 2ad04d9428a9ac78874861a2019bde60963abe48
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
 Date:   Fri Aug 21 11:59:40 2026 +1000
 
-    Correct the turn rate from the gyroscope; the heading bias was model error
-    
-    The heading innovation carried a steady +6.7 degrees, which the previous
-    commit absorbed by opening Q's heading term to 1e-2 on the theory that it was
-    yaw wander over uneven floor. The gyroscope trace says otherwise: it peaks at
-    511 deg/s during each turn and integrates to 87.6 degrees over two steps, so
-    the robot clears a 90 degree heading step in two. At Lab 1's 2.61 rad/s the
-    model needs six. The measured heading was therefore ahead of the prediction
-    for four steps out of every fifty, every leg, in the same direction -- a bias
-    that looks like noise only until you check what produced it.
-    
-    max_turn_rate_rad_s 2.61 -> 7.5 reproduces the observed timing. With the
-    model no longer lagging, Q's heading term comes back down to 3e-3; it was
-    sized to cover an error that no longer exists.
-    
-    Replaying the 200-step log: Mahalanobis 0.262 -> 0.042, against a 4.0
-    threshold. The run as it was actually flown scored 0.879, so the three
-    calibration passes together account for a factor of twenty.
-    
-    This also explains the stalls. Of the ten steps under 0.02 m/s, eight fall in
-    the first ten steps of a leg: the turn is violent enough to cost most of the
-    forward speed, the robot needs about two steps to build it back, and a high
-    spot met during that window stops it outright. It is not a steady-state
-    problem, so raising the commanded speed or closing a loop around it would not
-    address the mechanism.
+    Correct the turn rate using the gyroscope readings
 
-commit cf37bfe4868ad427faf9d9d087498f94e63b2fa6
+commit 22af16fc9e35703c91ac9ef6672135a5099f2930
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
 Date:   Fri Aug 21 11:44:53 2026 +1000
 
-    Calibrate gain, deadband and noise from the 200-step hardware log
-    
-    The 11:38 run completed all 200 steps on level floor at raw 10, with the
-    period at 104.9 ms and every sensor check passing. Only filter consistency
-    failed, at NIS 34.9 with 2% inside the gate, and the log is complete enough
-    to fix that offline instead of on the robot.
-    
-    speed_gain and the deadband are the slope and x-intercept of one line, so a
-    single working point cannot separate them; Lab 1 pinned the gain at 2.69 from
-    a locator track that included stalled steps, reading a stop-start average as
-    a steady speed. Two measured points -- raw 7 at 0.0318 m/s and raw 10 at
-    0.0905 -- solve both: gain 1.957, deadband 0.0537, fitting both exactly. A
-    test now asserts the line passes through both, so a later edit to either
-    constant that breaks the fit fails there rather than on the robot.
-    
-    R was still the simulator's obs_noise_std_vel. The measured heading
-    innovation has a standard deviation of 0.10 rad, four times that, because the
-    IMU reading carries the robot's real yaw wander on uneven floor rather than
-    sensor noise alone. REAL_MEASUREMENT_NOISE now applies the measured values on
-    hardware only, leaving simulation on the simulator's own figures.
-    
-    Q's heading term goes from 1e-4 to 1e-2 to absorb the same wander, which the
-    heading innovation shows as a steady +7 degrees.
-    
-    Replaying the log with all three: mean NIS 34.9 -> 2.04 against a theoretical
-    2.0, gate coverage 2% -> 96%, trajectory RMSE 0.239 m -> 0.156 m. Simulation
-    is unaffected in kind: 0.0233 and 1.000.
-    
-    Both hardware logs are archived under logs/hardware/ before any further run
-    can overwrite them.
+    Calibrate the speed model and noise from the hardware log
 
-commit 93653685d60ed567d99bac389708763ce7b8a069
+commit 984d30a66c856f66b51630feb8cb22fa44e79941
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
 Date:   Fri Aug 21 11:27:55 2026 +1000
 
-    Re-estimate the deadband and dt from hardware; raise the command to raw 8
-    
-    The controlled run answered its question and exposed a bigger one.
-    
-    ThrottledRobot works: the control period went from 209 ms to 104.5 ms. But
-    the robot still stalled on 44% of its steps and the legs came out 0.165 and
-    0.070 m instead of the predicted 0.51, because the model's deadband is wrong.
-    Two independent measurements say so, neither of them from the model: the lab1
-    run stalled 0.0633 m short while the controller still commanded 0.0506 m/s,
-    and at a 0.07 command the encoders read 0.0318 m/s while moving, implying
-    0.07 - 0.0318/2.69 = 0.0582. The model assumed 0.0322, so it predicted
-    0.102 m/s where the robot managed 0.032 -- a 3.2x overestimate, and the main
-    reason NIS sat at 64.
-    
-    deadband 0.0322 -> 0.055, dt 0.1 -> 0.105, SCRIPT_SPEED 0.07 -> 0.08. At
-    50 steps that gives 0.35 m legs and about 0.47 m of floor with the ball's
-    width, inside the 0.5-0.6 m arena. raw 9 would clear the deadband further but
-    needs 0.62 m.
-    
-    instructions.md asks both to reuse the Lab 1 motion model and to calibrate
-    against the real robot, which collide once a Lab 1 parameter is contradicted
-    by measurement. Resolved by keeping the equations identical and re-estimating
-    the parameters: the old test asserted bit-identical output, and now feeds
-    Lab 1's parameters into Lab 2's dynamics to demand the same, which pins the
-    equations without freezing the numbers. A second test records which
-    parameters diverged and why.
-    
-    Also fixed: check_imu_sign compared the log against a hard-coded +1, so after
-    IMU_YAW_SIGN was corrected to -1 it reported a failure and told the operator
-    to make a change already in place. It now compares against the constant.
-    Two more tests were anchored to SCRIPT_SPEED and broke when the working point
-    moved despite testing nothing about it; both now use COMMAND_SPEED_LIMIT.
-    
-    logs/hardware/ keeps the surviving robot log from the 11:19 run; its
-    diagnostic log was overwritten by a later simulation before it was saved.
+    Re-estimate the deadband and dt from hardware data
 
-commit ade6f9333c11baf1ac39fd71dad682694ffb7e4d
+commit 26ffcd7b1909331d065f95a79fe4c92f2c18d666
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
 Date:   Fri Aug 21 11:18:11 2026 +1000
 
-    Hold the square at 50 steps and raw 7 for one controlled run
-    
-    Reverts the trajectory parameters, not the fixes. The point is to change one
-    variable at a time: ThrottledRobot and IMU_YAW_SIGN = -1 stay, the commanded
-    speed and leg length go back to what the 2026-08-21 run used, so the next log
-    answers one question -- did halving the BLE traffic bring the control period
-    down from 209 ms.
-    
-    raw 7 is known to stall (32% of steps moved under 2 mm last time) and is
-    expected to stall again, since the deadband is a property of the robot and
-    nothing about it changed. Keeping it anyway means the stall rate is
-    comparable between the two runs instead of confounded with a speed change.
-    
-    Expect longer legs if the period does drop: 0.51 m rather than 0.41 m, about
-    0.62 m of floor with the ball's diameter, against an arena estimated at
-    0.5-0.6 m. Abort with Q if the first leg overruns.
+    Keep the square at 50 steps and raw 7 for one test run
 
-commit 1d85b6f5d9f1cfcec9def033fedc99b570659c86
+commit 02fc145125eadb39126dfa9d13c208ba8b3a90b4
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
 Date:   Fri Aug 21 11:00:05 2026 +1000
 
-    Halve the BLE traffic per step; fix the yaw sign; size legs by steps
-    
-    The 2026-08-21 hardware log showed three separate faults, only one of which
-    was visible as "the legs come out short".
-    
-    Control period was 209 ms against the 100 ms the filter assumes, which
-    doubles every predicted displacement. The cause is not sensor reading --
-    every get_*() call is a dictionary lookup into a stream buffer, costing
-    nothing. It is that Robot.set_heading_and_speed issues set_heading and then
-    set_speed, and both end in the same ToyUtil.roll_start(heading, speed): the
-    first carries the *previous* speed and is superseded a full round trip later.
-    On 49 of every 50 steps the heading has not changed and that write buys
-    nothing. ThrottledRobot subclasses Robot and overrides that one method, so
-    src/sphero_env is untouched.
-    
-    IMU_YAW_SIGN is -1, not +1. Regressing the logged yaw against the commanded
-    heading gives a slope of -0.97 -- the documentation does not hold for this
-    robot. The guard caught it mid-run and fell back to the observation, which is
-    what it was for. The IMU tests now derive their yaw from IMU_YAW_SIGN instead
-    of assuming +1, so they test the logic (zero cancellation, transient
-    tolerance, fallback) rather than one sign; verified by flipping the constant
-    and re-running.
-    
-    Leg length is speed x steps x period, and the arena was being fitted by
-    lowering the speed -- straight back into the deadband, where the robot spent
-    32% of its steps moving less than 2 mm. LEG_STEPS is now the knob and
-    SCRIPT_SPEED goes to 0.09 for margin above the deadband. scripted_action laps
-    the square rather than stopping after four legs.
-    
-    calibrate_leg.py measures period and speed on the robot and prints the
-    LEG_STEPS for a target leg, timing the period at zero speed so that phase
-    needs no floor space.
-    
-    Unverified without hardware: that ThrottledRobot actually brings the period
-    down. LEG_STEPS = 25 assumes it reaches about 105 ms. If it does not, the
-    legs come out proportionally longer and DT must change to match.
+    Send one Bluetooth write per step and fix the IMU yaw sign
 
-commit f93d5937efdfbac16402fb4be37673ae318ed4a0
+commit b13a243d0134937f271d28d760a6a1a1beaa29e0
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
 Date:   Fri Aug 21 10:31:01 2026 +1000
 
-    Extract SCRIPT_SPEED so the working point has one definition
-    
-    The commanded leg speed was written into scripted_action and asserted
-    literally in two tests, so changing it meant finding three places and the
-    test failures would only say "0.07 != 0.10".
-    
-    The value is unchanged at 0.10; the simulation CSV is byte-identical.
-    
-    test_observation_range_must_cover_the_model_response deliberately does NOT
-    use the new constant. It exists to show that the command cap and the
-    observation range are different quantities, and that has to hold whatever
-    the script commands. Anchoring it to the working point would make it pass
-    vacuously at any speed where the model stays under 0.15 m/s -- at 0.07 the
-    model settles at 0.102, so the assertion would simply flip to false while
-    the confusion it guards against was still there. It now tests at
-    COMMAND_SPEED_LIMIT, the fastest command the hardware accepts, which is
-    both a stronger claim and independent of the trajectory.
+    Extract SCRIPT_SPEED as a constant
 
-commit ce9c7a73aa8ad8e7621158ba4aa8fbd50807037f
+commit 0d29288282d92dd36e5c42367dea9557195fe424
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
 Date:   Thu Aug 20 00:46:51 2026 +1000
 
-    Add CLAUDE.md with the submission contracts only
-    
-    Keeps the parts that do not go stale: the automarker file names, row counts,
-    column orders and thresholds, plus the constraint that lab1.py's behaviour is
-    frozen because its CSV records one specific marked run.
-    
-    Progress -- what is still assumed rather than measured, what to do next --
-    deliberately stays out, since it would be wrong again after every hardware
-    run.
+    Add project notes with the submission requirements
 
-commit eb9957685176740f5bfd612dd912a848c7fe646c
+commit 65d0c5cd02c1ddb735c44a7d40bcc43f4c70fd1d
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
 Date:   Thu Aug 20 00:39:40 2026 +1000
 
-    Remove CLAUDE.md
-    
-    Its progress-tracking parts -- what has been submitted, which constants are
-    still assumed rather than measured -- go stale as soon as the next hardware
-    run happens, and a stale file in the repository is worse than no file. That
-    state belongs in the assistant's memory instead, where it is updated as the
-    work moves.
-    
-    The durable parts are already in the code: the API traps are commented at
-    the constants they govern, the submission limits are constants in
-    analyze_lab*.py, and check_run.py documents its own usage.
+    Remove project notes
 
-commit f5e3a975680d542bac642350ce6add0f4b88c14f
+commit 6e013ea813bab86de1e7328bc5b1366b0e584171
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
 Date:   Sun Aug 16 19:39:43 2026 +1000
 
-    Add a hardware-run checker for the diagnostic log
-    
-    The automarker metrics say whether the filter was consistent; they cannot
-    say whether it was fed real sensors. A run can pass both thresholds with the
-    speed measurement still being the command echoed back, which is exactly the
-    bug this lab's fixes were about. There is one hardware session to catch that
-    in, and the evidence is 26 columns over 200 rows.
-    
-    check_run.py replays ImuHeadingSensor's arithmetic against the logged raw
-    yaw, so "did the filter use the IMU" is answered directly instead of being
-    inferred. Comparing z_heading against obs_heading cannot answer it: on
-    hardware the observation is the commanded heading, so a robot that tracks
-    its command well makes an honest IMU reading agree with it -- an earlier
-    draft of this checker failed a healthy synthetic run for that reason, and
-    test_a_tracking_robot_does_not_look_like_a_command_echo pins the fix.
-    
-    Each failing check prints what to change rather than just a verdict.
-    
-    Verified against synthetic logs for four cases: healthy run, wrong yaw sign
-    with the guard tripped, missing IMU stream, and speed still echoing the
-    command. 63 tests pass.
+    Add a checker for the hardware diagnostic log
 
-commit 4db180ce9d0c5da5b25bb3f52a70744bf06c5ba6
+commit b4fc31aa9d2a7866215bb17454ed6265aa030fc2
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
 Date:   Sun Aug 16 12:32:09 2026 +1000
 
-    Scope CLAUDE.md to this project and make a bare pytest run work
-    
-    CLAUDE.md was a verbatim copy of the workspace file, so every general rule
-    was stated twice. The workspace "Project and Local Overrides" section asks a
-    project CLAUDE.md to carry only project-specific architecture, commands,
-    layout and submission details, so this rewrites it to that: the venv-based
-    commands, the lab layout and what is course-supplied, the two automarker
-    contracts, the hardware API traps that silently produce wrong numbers, and
-    the list of values still assumed rather than measured.
-    
-    Writing down the test command exposed that it does not actually work on its
-    own: the Windows system temp directory is access-denied here, so nine
-    tmp_path tests error at setup with WinError 5. Earlier runs passed only
-    because they were given an explicit --basetemp. pytest.ini now pins basetemp
-    inside the project, the same fix the sibling ENG5105 project already uses.
-    
-    Verified: `python -m pytest` with no arguments now collects and passes all
-    54 tests.
+    Add pytest config so the test suite runs without arguments
 
-commit 0f931694873fb566b87b2d26147b62cb77f67d10
+commit 6a806675fbe7f365125e377723b2feb42b728325
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
 Date:   Sun Aug 16 12:27:10 2026 +1000
 
-    Add CLAUDE.md
-    
-    Copy of the workspace-level CLAUDE.md, so this repository carries its own
-    agent instructions now that it is standalone rather than relying on the
-    file one directory up.
+    Add project notes
 
-commit 80143a1a2be38cb8fff9740ce7f7d92d7ca0c1de
+commit 596f3d9e93b998a11d2a8f90a99e259fd1d92208
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
 Date:   Sun Aug 16 12:07:39 2026 +1000
 
     Initial commit: ECE5178 Sphero labs
-    
-    Snapshot of the working tree as its own repository, separate from the
-    other projects under the workspace root.
-    
-    Includes the course framework (src/, examples/), the Lab 1 and Lab 2
-    implementations with their tests and documentation, and the lab 3/4
-    starter files.
-    
-    Data files that upstream's .gitignore excludes are force-added: the two
-    submission CSVs, the analysis plot, and logs/ from the 2026-08-14
-    hardware run. Those come from the real robot and cannot be regenerated,
-    so they are kept as experimental evidence rather than treated as build
-    output.
