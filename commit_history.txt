@@ -1,107 +1,361 @@
-commit c35e19bcce442c9e3cfcfa4b9e1c26cb02c4d1ed
+commit 939f4142f54010485497ae73c38f4c6a654bc648
+Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
+Date:   Thu Sep 3 16:56:25 2026 +1000
+
+    Update project notes and keep the latest hardware logs
+    
+    (cherry picked from commit 0878d53e26a8c2a784ee8e3c97f0e805892e459e)
+
+commit a82e8b17026e5d7a1235a940350a7167a0169989
+Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
+Date:   Thu Sep 3 16:48:46 2026 +1000
+
+    Update commit history
+    
+    (cherry picked from commit da1aa29184db1f154cc1c97759a071e3aca06a39)
+
+commit 7104f3095be8b59b2e60d227b0b9da2bcd890ba7
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
 Date:   Thu Sep 3 16:38:23 2026 +1000
 
     Add the M2-2 function file and update the commit history
+    
+    (cherry picked from commit c35e19bcce442c9e3cfcfa4b9e1c26cb02c4d1ed)
 
-commit 613aa6660e453f2cebdc3b0f7c02fac1d055e29b
+commit 78591e9179e60fc629187e595c7a970097f6584c
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
 Date:   Thu Sep 3 16:32:26 2026 +1000
 
     Plot NIS against the chi-square bounds
+    
+    (cherry picked from commit 613aa6660e453f2cebdc3b0f7c02fac1d055e29b)
 
-commit 837e199bba000bcc31aef53e3b0398a49d0ebfd2
+commit d4bcf088fcd2f04065877bd8a48bc92d562d66cb
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
 Date:   Fri Aug 21 12:56:40 2026 +1000
 
     Correct the lane straight lengths
+    
+    (cherry picked from commit 837e199bba000bcc31aef53e3b0398a49d0ebfd2)
 
-commit ff4fa9ff64958a406f67c4bc897961c0a2d2b6c3
+commit f3f2d3d265a5fc16bee7c5d2262049847e5501f1
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
 Date:   Fri Aug 21 12:45:07 2026 +1000
 
     Scale the locator distance and cap single-step jumps
+    
+    (cherry picked from commit ff4fa9ff64958a406f67c4bc897961c0a2d2b6c3)
 
-commit 26835b5bbda2abf448acdc3604a2465e64db7245
+commit 56700d0a176fa1d1550edb01c014b5b03fa7e53c
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
 Date:   Fri Aug 21 12:30:57 2026 +1000
 
     Advance the lane by measured distance and stop after one lap
+    
+    (cherry picked from commit 26835b5bbda2abf448acdc3604a2465e64db7245)
 
-commit 01fde145849ed24bd6df3eda0b3d0533e8d3e405
+commit fd242b021c418e738a592af9a073f1d8bea57ab7
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
 Date:   Fri Aug 21 12:14:23 2026 +1000
 
     Follow the yellow lane instead of a square
+    
+    (cherry picked from commit 01fde145849ed24bd6df3eda0b3d0533e8d3e405)
 
-commit 2ad04d9428a9ac78874861a2019bde60963abe48
+commit aa1cdd1c169b6ea76bcaf2e4bcf3a63416457251
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
 Date:   Fri Aug 21 11:59:40 2026 +1000
 
     Correct the turn rate using the gyroscope readings
+    
+    (cherry picked from commit 2ad04d9428a9ac78874861a2019bde60963abe48)
 
-commit 22af16fc9e35703c91ac9ef6672135a5099f2930
+commit 0f6f95034ce406f75c82177f616e5801ab2f6790
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
 Date:   Fri Aug 21 11:44:53 2026 +1000
 
     Calibrate the speed model and noise from the hardware log
+    
+    (cherry picked from commit 22af16fc9e35703c91ac9ef6672135a5099f2930)
 
-commit 984d30a66c856f66b51630feb8cb22fa44e79941
+commit 01ba0c1d776b0026522704a2c7e1695750bd01b9
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
 Date:   Fri Aug 21 11:27:55 2026 +1000
 
     Re-estimate the deadband and dt from hardware data
+    
+    (cherry picked from commit 984d30a66c856f66b51630feb8cb22fa44e79941)
 
-commit 26ffcd7b1909331d065f95a79fe4c92f2c18d666
+commit bfe7d5c4e6ba244d7e6ce844475942cde7d078b8
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
 Date:   Fri Aug 21 11:18:11 2026 +1000
 
     Keep the square at 50 steps and raw 7 for one test run
+    
+    (cherry picked from commit 26ffcd7b1909331d065f95a79fe4c92f2c18d666)
 
-commit 02fc145125eadb39126dfa9d13c208ba8b3a90b4
+commit 6a27a32fde4e711f1f29623048fadbea2261e48d
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
 Date:   Fri Aug 21 11:00:05 2026 +1000
 
     Send one Bluetooth write per step and fix the IMU yaw sign
+    
+    (cherry picked from commit 02fc145125eadb39126dfa9d13c208ba8b3a90b4)
 
-commit b13a243d0134937f271d28d760a6a1a1beaa29e0
+commit 1d7fb705b9e54cc255689c864429aec00a950405
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
 Date:   Fri Aug 21 10:31:01 2026 +1000
 
     Extract SCRIPT_SPEED as a constant
+    
+    (cherry picked from commit b13a243d0134937f271d28d760a6a1a1beaa29e0)
 
-commit 0d29288282d92dd36e5c42367dea9557195fe424
+commit 1e70b94ca1928067cf3e61e8b37d8a8e3dae5e53
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
 Date:   Thu Aug 20 00:46:51 2026 +1000
 
     Add project notes with the submission requirements
+    
+    (cherry picked from commit 0d29288282d92dd36e5c42367dea9557195fe424)
 
-commit 65d0c5cd02c1ddb735c44a7d40bcc43f4c70fd1d
+commit c33c3816f04335ebae35e822a13d1be7aebdeee7
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
 Date:   Thu Aug 20 00:39:40 2026 +1000
 
     Remove project notes
+    
+    (cherry picked from commit 65d0c5cd02c1ddb735c44a7d40bcc43f4c70fd1d)
 
-commit 6e013ea813bab86de1e7328bc5b1366b0e584171
+commit 84c51786b041b8758522b22e11848bc6dec30bdc
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
 Date:   Sun Aug 16 19:39:43 2026 +1000
 
     Add a checker for the hardware diagnostic log
+    
+    (cherry picked from commit 6e013ea813bab86de1e7328bc5b1366b0e584171)
 
-commit b4fc31aa9d2a7866215bb17454ed6265aa030fc2
+commit 8b7423714d66ad51f40181bc1b1383b2e9e851c3
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
 Date:   Sun Aug 16 12:32:09 2026 +1000
 
     Add pytest config so the test suite runs without arguments
+    
+    (cherry picked from commit b4fc31aa9d2a7866215bb17454ed6265aa030fc2)
 
-commit 6a806675fbe7f365125e377723b2feb42b728325
+commit c6f4a0209a4d66775ba9dc1fb2e25314be3daa6f
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
 Date:   Sun Aug 16 12:27:10 2026 +1000
 
     Add project notes
+    
+    (cherry picked from commit 6a806675fbe7f365125e377723b2feb42b728325)
 
-commit 596f3d9e93b998a11d2a8f90a99e259fd1d92208
+commit 4bcb1ed810c1251f6baed4ef898b050334c84577
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
-Date:   Sun Aug 16 12:07:39 2026 +1000
+Date:   Thu Sep 3 17:03:51 2026 +1000
 
-    Initial commit: ECE5178 Sphero labs
+    Import Lab 2 working copy
+
+commit 81d4983eddc07930dc852bcfe0e11ce5ee99ebf3
+Merge: c11f90c b71d7fd
+Author: wxy331-hub <wwww135711@gmail.com>
+Date:   Fri Aug 14 12:21:15 2026 +1000
+
+    Merge pull request #1 from wxy331-hub/codex/lab2-ekf
+    
+    Implement and calibrate Lab 2 EKF
+
+commit b71d7fd6ea5be4e3ccab12b67f82c0740e4280ce
+Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
+Date:   Fri Aug 14 12:15:31 2026 +1000
+
+    Implement and calibrate Lab 2 EKF
+
+commit c11f90ca1849193ce84de295e526fb7ed3d5d748
+Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
+Date:   Fri Aug 7 11:32:21 2026 +1000
+
+    Clean Lab 1 implementation and add English guide
+
+commit 78683c3af5367d8d213824dfeac326999c7319f8
+Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
+Date:   Fri Aug 7 11:05:30 2026 +1000
+
+    Complete ECE5178 Lab 1 solution
+
+commit 28f7ba9aa79c864616ae4036649830861100f17c
+Author: Michael Burke <mgb45@users.noreply.github.com>
+Date:   Mon Aug 3 15:46:52 2026 +1000
+
+    Update README.md
+
+commit a9b00f4d8a519d2ec87c47226acfb25fb5344d03
+Merge: 7b6bccc 6716a3d
+Author: Michael Burke <mgb45@users.noreply.github.com>
+Date:   Mon Jul 27 14:32:37 2026 +1000
+
+    Merge pull request #5 from MonashRobotics/copilot/fix-lab-1-2-instructions-dynamics
+    
+    Update lab heading input references
+
+commit 6716a3dffc6798168a70282cba9086488a5b726e
+Author: copilot-swe-agent[bot] <198982749+Copilot@users.noreply.github.com>
+Date:   Mon Jul 27 04:14:42 2026 +0000
+
+    Update lab heading input references
+
+commit 7b6bcccc3a792d5f4b62020db8fdf61c41bb70b7
+Merge: f1d7282 3fc96a8
+Author: Michael Burke <mgb45@users.noreply.github.com>
+Date:   Mon Jul 27 13:01:18 2026 +1000
+
+    Merge pull request #3 from AndyLi-26/update_project_setup
+    
+    modify uv instructions
+
+commit 3fc96a890c748ead88daa2ae4d42e5016ce0a5a6
+Author: Andy Li <andyli26>
+Date:   Mon Jul 27 12:49:55 2026 +1000
+
+    modify readme
+
+commit f1d7282573bc8cf2d243024f148d93f5b5e22fbb
+Author: AaronMonash <110008453+AaronMonash@users.noreply.github.com>
+Date:   Mon Jul 27 11:06:46 2026 +1000
+
+    Update required python version
+
+commit 6dd2e002522b9353fb8e0b76d4b16e0f9ed2d4b2
+Author: Michael Burke <mgb45@users.noreply.github.com>
+Date:   Sun Jul 26 20:46:47 2026 +1000
+
+    Fix links to Lab instructions and final demo
+    
+    Updated links for Lab instructions and final demo in README.
+
+commit 3f59a3fdcd5aa606807a4d9fa61bf62e33df5db3
+Merge: b3b15a0 92338cc
+Author: Michael Burke <mgb45@users.noreply.github.com>
+Date:   Sun Jul 26 20:44:39 2026 +1000
+
+    Merge pull request #2 from AndyLi-26/update_project_setup
+    
+    restructure the files
+
+commit 92338cc1b6d3bd905d8d8c79c291cb22b8d6b033
+Author: Andy Li <andyli26>
+Date:   Sun Jul 26 19:33:29 2026 +1000
+
+    restructure the files
+
+commit b3b15a0d060417a95c9d001c8cce1f9e66ded12b
+Author: Michael Burke <mgb45@users.noreply.github.com>
+Date:   Tue Jul 7 13:14:13 2026 +1000
+
+    Update Lab3.md
+
+commit 0fd8e6e7ef77802382520f554819cda71a853444
+Author: Michael Burke <mgb45@users.noreply.github.com>
+Date:   Mon Jul 6 12:26:39 2026 +1000
+
+    Fix formatting in Lab2.md table headers
+
+commit 548cc057a2e912e603e665c398c9ac50a2815e10
+Merge: f742ea0 0ac2663
+Author: Michael Burke <mgb45@users.noreply.github.com>
+Date:   Thu Jul 2 10:15:40 2026 +1000
+
+    Merge pull request #1 from AndyLi-26/update_project_setup
+    
+    add fix-version, dependency issue
+
+commit 0ac2663b7bb1daa602537bef7c920eea821c5fb0
+Author: Andy Li <andyli26>
+Date:   Thu Jul 2 10:03:00 2026 +1000
+
+    add fix-version, dependency issue
+
+commit f742ea0128babe7f82a8adc65517084e5402f05a
+Author: Michael Burke <mgb45@users.noreply.github.com>
+Date:   Mon Jun 29 14:28:39 2026 +1000
+
+    Update README.md
+
+commit b21037a8526753ca8879bedb18767d19aa347e3d
+Author: Michael <michael@monash>
+Date:   Sun Jun 28 15:25:30 2026 +1000
+
+    Tweaked wording to be planner agnostic.
+
+commit 6d4d6b4eb314976574577bb60df2be192013dd79
+Author: Michael <michael@monash>
+Date:   Sun Jun 28 15:22:41 2026 +1000
+
+    Added skeletons for labs 1-4.
+
+commit ffd4d816f95bfd24e7ec4f2ce5967a6f9da05e73
+Author: Michael <michael@monash>
+Date:   Sun Jun 28 13:51:24 2026 +1000
+
+    Added lab2 skeleton.
+
+commit 267875fcc580b85086716cfb85fe9c0bebc28213
+Author: Michael <michael@monash>
+Date:   Sun Jun 28 00:22:24 2026 +1000
+
+    Added maze generator to repo.
+
+commit c7049022852f02e24db3d7c6dcf29e138dd2e01c
+Author: Michael <michael@monash>
+Date:   Sun Jun 28 00:15:49 2026 +1000
+
+    Removed duplicate obs description
+
+commit b76cb9b62e55365834f94ae0e7f480d3db28f937
+Author: Michael <michael@monash>
+Date:   Sun Jun 28 00:13:16 2026 +1000
+
+    Added more robot info detail
+
+commit 4d8d91be862e0c32a7315cf82e0a81b08a235259
+Merge: b2bae49 43fee8d
+Author: Michael <michael@monash>
+Date:   Sun Jun 28 00:05:43 2026 +1000
+
+    Merge remote-tracking branch 'refs/remotes/origin/main'
+
+commit b2bae49b06e4c8a80968c761f3eb76df10ea8d72
+Author: Michael <michael@monash>
+Date:   Sun Jun 28 00:04:35 2026 +1000
+
+    Updated lab 2. Added more sensor info to env step, fixed collision flag.
+
+commit 43fee8d627b19d330e5d90d6356442fb8e06606e
+Author: Michael Burke <mgb45@users.noreply.github.com>
+Date:   Wed Jun 24 11:12:55 2026 +1000
+
+    Update Lab1.md
+
+commit 12efcb92ef686acc89d8dabaebae6854d0447145
+Author: Michael <michael@monash>
+Date:   Mon Jun 8 13:21:38 2026 +1000
+
+    Tweaked instructions
+
+commit 59a98d45e13f6661abb5eb4845ac48b1f0b53768
+Author: Michael <michael@monash>
+Date:   Mon Jun 8 13:11:05 2026 +1000
+
+    Added teleop example, improved readme and updated lab1 scaffolding.
+
+commit 5d09742485262a74131660de352887fbceb108af
+Author: Michael <michael@monash>
+Date:   Mon Jun 8 12:48:12 2026 +1000
+
+    Added robot interface
+
+commit 862c5a503a5f1c1818478a9b61c555ba7ce1a70f
+Author: Michael <michael@monash>
+Date:   Mon Jun 8 12:45:17 2026 +1000
+
+    Added base repo to sphero-student
