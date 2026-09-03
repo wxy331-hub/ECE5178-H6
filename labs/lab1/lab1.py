@@ -18,14 +18,29 @@ from sphero_env.robot.robot import Robot
 from sphero_unsw.sphero_edu import SpheroEduAPI
 
 try:
-    from .dynamics import dynamics, wrap_angle
+    from .analyze_lab1 import (
+        EXPECTED_ROWS,
+        FINAL_DISTANCE_LIMIT,
+        REQUIRED_COLUMNS,
+        TARGET,
+        TRAJECTORY_RMSE_LIMIT,
+    )
+    from .dynamics import MODEL_CONFIG, dynamics, wrap_angle
 except ImportError:
-    from dynamics import dynamics, wrap_angle
+    from analyze_lab1 import (
+        EXPECTED_ROWS,
+        FINAL_DISTANCE_LIMIT,
+        REQUIRED_COLUMNS,
+        TARGET,
+        TRAJECTORY_RMSE_LIMIT,
+    )
+    from dynamics import MODEL_CONFIG, dynamics, wrap_angle
 
 
 DT = 0.1
-N_STEPS = 100
-TARGET = np.array([0.5, 0.5], dtype=np.float32)
+# TARGET, N_STEPS and the CSV columns come from analyze_lab1 so the controller
+# and the marker share one definition of the task.
+N_STEPS = EXPECTED_ROWS
 RAW_SPEED_LIMIT = 15  # BP-2E84: measured 0.140 m in 1 s at raw speed 15.
 LAB_DIR = Path(__file__).resolve().parent
 
@@ -36,9 +51,21 @@ class ControllerConfig:
     kd: float = 0.08
     derivative_filter: float = 0.70
     max_speed: float = 0.15
-    min_speed: float = 0.025
+    # Must stay above the calibrated command deadband (0.0322 m/s): a floor
+    # inside it is commanded but produces no motion, stalling the robot
+    # 0.040 m short of the target.
+    min_speed: float = 0.05
     stop_tolerance: float = 0.025
     max_speed_increase_per_step: float = 0.01
+
+    def __post_init__(self) -> None:
+        deadband = MODEL_CONFIG["command_deadband_m_s"]
+        if self.min_speed <= deadband:
+            raise ValueError(
+                f"min_speed ({self.min_speed}) must exceed the model command "
+                f"deadband ({deadband}); otherwise the robot stalls short of "
+                "the target"
+            )
 
 
 class PositionPDController:
@@ -115,17 +142,30 @@ def make_real_env(api: SpheroEduAPI) -> Robot:
     )
 
 
+def _retryable_ble_error(error: BaseException) -> bool:
+    """Match the transient Windows BLE failures seen on this machine."""
+
+    if isinstance(error, TimeoutError):
+        return True
+    return isinstance(error, OSError) and getattr(error, "winerror", None) in {
+        -2147023673,
+        1223,
+    }
+
+
 def connect_with_retry(stack: ExitStack, selected_toy: object) -> SpheroEduAPI:
     """Try the transient Windows BLE connection up to three times."""
 
-    last_error: TimeoutError | None = None
+    last_error: BaseException | None = None
     for attempt in range(1, 4):
         try:
             return stack.enter_context(SpheroEduAPI(selected_toy))
-        except TimeoutError as error:
+        except (TimeoutError, OSError) as error:
+            if not _retryable_ble_error(error):
+                raise
             last_error = error
             if attempt < 3:
-                print(f"Bluetooth timeout ({attempt}/3); retrying in 3 seconds...")
+                print(f"Bluetooth connection failed ({attempt}/3); retrying...")
                 time.sleep(3.0)
 
     raise RuntimeError("Bluetooth connection failed after 3 attempts") from last_error
@@ -222,12 +262,38 @@ def write_submission(
     sim_trajectory: list[np.ndarray],
     real_trajectory: list[np.ndarray],
 ) -> Path:
+    """Atomically write a validated automarker CSV.
+
+    Rows are checked and written to a temporary file first, so a failure part
+    way through cannot truncate a previously valid submission.
+    """
+
+    if not student_id.isdigit():
+        raise ValueError("student_id must contain digits only")
+    if len(sim_trajectory) != N_STEPS or len(real_trajectory) != N_STEPS:
+        raise ValueError(
+            f"submission requires exactly {N_STEPS} rows; got "
+            f"{len(sim_trajectory)} simulated and {len(real_trajectory)} real"
+        )
+
+    values = np.column_stack(
+        [
+            np.asarray(sim_trajectory, dtype=float),
+            np.asarray(real_trajectory, dtype=float),
+        ]
+    )
+    if values.shape != (N_STEPS, len(REQUIRED_COLUMNS)):
+        raise ValueError(f"submission rows have an invalid shape: {values.shape}")
+    if not np.all(np.isfinite(values)):
+        raise ValueError("submission contains NaN or infinite values")
+
     output = LAB_DIR / f"{student_id}_lab1.csv"
-    with output.open("w", newline="", encoding="utf-8") as handle:
+    temporary = output.with_suffix(".csv.tmp")
+    with temporary.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["sim_x", "sim_y", "real_x", "real_y"])
-        for sim_point, real_point in zip(sim_trajectory, real_trajectory, strict=True):
-            writer.writerow([*map(float, sim_point), *map(float, real_point)])
+        writer.writerow(REQUIRED_COLUMNS)
+        writer.writerows(values)
+    temporary.replace(output)
     return output
 
 
@@ -237,15 +303,18 @@ def print_metrics(
 ) -> None:
     sim = np.asarray(sim_trajectory)
     sim_error = float(np.linalg.norm(sim[-1] - TARGET))
-    print(f"{'PASS' if sim_error <= 0.10 else 'FAIL'} simulation final distance: {sim_error:.4f} m")
+    status = "PASS" if sim_error <= FINAL_DISTANCE_LIMIT else "FAIL"
+    print(f"{status} simulation final distance: {sim_error:.4f} m")
     if real_trajectory is None:
         return
 
     real = np.asarray(real_trajectory)
     real_error = float(np.linalg.norm(real[-1] - TARGET))
     rmse = float(np.sqrt(np.mean(np.sum((sim - real) ** 2, axis=1))))
-    print(f"{'PASS' if real_error <= 0.10 else 'FAIL'} real final distance:       {real_error:.4f} m")
-    print(f"{'PASS' if rmse <= 0.20 else 'FAIL'} sim-vs-real RMSE:          {rmse:.4f} m")
+    status = "PASS" if real_error <= FINAL_DISTANCE_LIMIT else "FAIL"
+    print(f"{status} real final distance:       {real_error:.4f} m")
+    status = "PASS" if rmse <= TRAJECTORY_RMSE_LIMIT else "FAIL"
+    print(f"{status} sim-vs-real RMSE:          {rmse:.4f} m")
 
 
 def parse_args() -> argparse.Namespace:

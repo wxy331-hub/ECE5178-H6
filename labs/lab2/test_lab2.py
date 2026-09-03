@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import importlib.util
+import sys
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -29,14 +30,19 @@ def _load_lab1_dynamics_module():
     return module
 
 
-def test_dynamics_uses_lab1_equations_with_lab2_speed_calibration() -> None:
-    lab1 = _load_lab1_dynamics_module()
-    assert MODEL_CONFIG["speed_gain"] == pytest.approx(2.47)
-    assert MODEL_CONFIG["speed_gain"] < lab1.MODEL_CONFIG["speed_gain"]
+def test_dynamics_is_identical_to_the_submitted_lab1_model() -> None:
+    """One robot, one model.
 
-    # Equal parameters must produce identical outputs, demonstrating that only
-    # the calibrated constant changed and the Lab 1 model equations did not.
-    lab1.MODEL_CONFIG["speed_gain"] = MODEL_CONFIG["speed_gain"]
+    An earlier revision lowered the Lab 2 gain to 2.47 to compensate for the
+    hardware speed measurement being a command echo.  With the measurement
+    fixed the compensation is wrong, and a filter that disagreed with the
+    submitted m1_2 dynamics would be describing a different robot.
+    """
+
+    lab1 = _load_lab1_dynamics_module()
+    assert MODEL_CONFIG["speed_gain"] == pytest.approx(
+        lab1.MODEL_CONFIG["speed_gain"]
+    )
     rng = np.random.default_rng(5178)
 
     for _ in range(1000):
@@ -186,6 +192,351 @@ def test_real_process_noise_reflects_hardware_residual() -> None:
     assert lab2.REAL_PROCESS_NOISE[1, 1] == pytest.approx(
         10.0 * default[1, 1]
     )
+
+
+def test_observation_range_must_cover_the_model_response() -> None:
+    """The command limit and the sensor range are different quantities.
+
+    Both environments call the parameter ``vel_limit``, and using one value
+    for both silently saturated every simulated speed reading: at the
+    scripted 0.10 command the model settles well above 0.15 m/s.
+    """
+
+    steady_speed = MODEL_CONFIG["speed_gain"] * (
+        0.10 - MODEL_CONFIG["command_deadband_m_s"]
+    )
+    assert steady_speed > lab2.COMMAND_SPEED_LIMIT  # why it mattered
+    assert lab2.SIM_SPEED_LIMIT > steady_speed  # why it is fixed now
+
+
+def test_simulated_speed_readings_are_no_longer_clipped() -> None:
+    with lab2.open_sim_env(False) as environment:
+        environment.reset(seed=5178)
+        speeds = [
+            float(environment.step(lab2.scripted_action(step, 0.0))[0][3])
+            for step in range(45)
+        ]
+
+    # Under the old range every steady-state reading came back pinned to the
+    # limit; the true response has to be observable instead.
+    assert max(speeds) > lab2.COMMAND_SPEED_LIMIT
+    assert max(speeds) < lab2.SIM_SPEED_LIMIT
+
+
+def test_hardware_keeps_the_scale_the_wrapper_converts_commands_with() -> None:
+    """Robot builds the raw byte as speed_cmd / vel_limit * raw_speed_limit.
+
+    Widening it for the hardware environment would quietly slow the robot
+    down: a 0.10 command would send 3/15 instead of 10/15.
+    """
+
+    environment = lab2.make_real_env(Mock())
+    assert environment.vel_limit == pytest.approx(lab2.COMMAND_SPEED_LIMIT)
+    assert environment.vel_limit == pytest.approx(0.15)
+
+
+def wrap_angle_degrees(degrees: float) -> float:
+    """Wrap to [-180, 180), the range the IMU attitude sensor reports."""
+
+    return (degrees + 180.0) % 360.0 - 180.0
+
+
+def _hardware_info(
+    *,
+    vx: float = 0.0,
+    vy: float = 18.24,
+    speed_cmd: float = 0.10,
+    yaw: float = 0.0,
+) -> dict:
+    """An info dict shaped like the one Robot.step() returns."""
+
+    return {
+        "state_odom": np.zeros(4, dtype=np.float32),
+        "state_true": np.zeros(4, dtype=np.float32),
+        "velocity": {"x": vx, "y": vy},
+        "orientation": {"yaw": yaw, "pitch": 0.0, "roll": 0.0},
+        "gyroscope": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "speed_cmd": speed_cmd,
+        "heading_cmd": 0.0,
+    }
+
+
+def _fake_robot() -> Mock:
+    robot = Mock()
+    observation = np.array([0.0, 0.0, 0.0, 0.10, 0.0], dtype=np.float32)
+    robot.reset.return_value = (observation, _hardware_info())
+
+    def step(action):
+        # A well-behaved robot: its IMU follows the commanded heading, while
+        # observation[2] stays at zero the way a command echo would.
+        info = _hardware_info(yaw=wrap_angle_degrees(np.degrees(action[1])))
+        return observation, None, False, False, info
+
+    robot.step.side_effect = step
+    return robot
+
+
+def test_hardware_speed_comes_from_the_encoder_not_the_command() -> None:
+    """api.get_speed() returns the commanded target, so obs[3] is an echo.
+
+    In the 2026-08-14 log the speed column equals speed_cmd in all 200 rows.
+    The encoder reading in info["velocity"] is the actual sensor.
+    """
+
+    observation = np.array([0.0, 0.0, 0.3, 0.10, 0.0])
+    z = lab2.extract_measurement(observation, _hardware_info(vx=3.0, vy=4.0))
+
+    assert z[1] == pytest.approx(0.05)  # hypot(3, 4) cm/s, not the command
+    assert z[0] == pytest.approx(0.3)  # heading still taken from the obs
+
+
+def test_hardware_speed_takes_its_sign_from_the_command() -> None:
+    z = lab2.extract_measurement(
+        np.array([0.0, 0.0, 0.0, 0.0, 0.0]),
+        _hardware_info(vx=0.0, vy=-8.0, speed_cmd=-0.10),
+    )
+    assert z[1] == pytest.approx(-0.08)
+
+
+@pytest.mark.parametrize(
+    "velocity", [None, {}, "unavailable", {"x": float("nan"), "y": 0.0}]
+)
+def test_measurement_falls_back_when_the_velocity_frame_drops(velocity) -> None:
+    """A dropped BLE sensor frame must never inject NaN into the filter."""
+
+    observation = np.array([0.0, 0.0, 0.2, 0.11, 0.0])
+    info = _hardware_info()
+    info["velocity"] = velocity
+
+    z = lab2.extract_measurement(observation, info)
+
+    assert np.all(np.isfinite(z))
+    assert z[1] == pytest.approx(0.11)
+
+
+def test_simulation_measurement_is_the_noisy_observation() -> None:
+    """Simulated observations are truth plus noise, so they are legitimate."""
+
+    observation = np.array([1.0, 2.0, 0.4, 0.09, 0.0])
+    np.testing.assert_allclose(
+        lab2.extract_measurement(observation), [0.4, 0.09]
+    )
+
+
+@pytest.mark.parametrize("imu_origin", [0.0, 137.0, -95.5, 179.0])
+def test_imu_heading_cancels_an_unknown_zero_point(imu_origin: float) -> None:
+    """Only yaw differences are used, so the IMU's own origin never matters."""
+
+    sensor = lab2.ImuHeadingSensor(initial_heading=0.0)
+
+    first = sensor.measure(_hardware_info(yaw=imu_origin), 0.0)
+    assert first == pytest.approx(0.0)
+
+    turned = sensor.measure(
+        _hardware_info(yaw=wrap_angle_degrees(imu_origin + 90.0)), np.pi / 2.0
+    )
+    assert turned == pytest.approx(np.pi / 2.0)
+
+
+def test_imu_heading_survives_a_normal_turn_transient() -> None:
+    """A 90 degree command step needs six steps at the turn limit.
+
+    That transient must not be mistaken for a sign error.
+    """
+
+    sensor = lab2.ImuHeadingSensor(initial_heading=0.0)
+    sensor.measure(_hardware_info(yaw=0.0), 0.0)
+    step_degrees = np.degrees(MODEL_CONFIG["max_turn_rate_rad_s"] * 0.1)
+
+    yaw = 0.0
+    for _ in range(12):
+        yaw = min(90.0, yaw + step_degrees)
+        assert sensor.measure(_hardware_info(yaw=yaw), np.pi / 2.0) is not None
+
+    assert not sensor.disabled
+
+
+def test_imu_heading_disables_itself_when_the_sign_is_wrong(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A mirrored yaw reads ~180 degrees off for a whole leg, not 6 steps."""
+
+    sensor = lab2.ImuHeadingSensor(initial_heading=0.0)
+    sensor.measure(_hardware_info(yaw=0.0), 0.0)
+
+    # The robot really turns +90; a mirrored IMU reports -90.
+    result: float | None = 0.0
+    for _ in range(lab2.IMU_DISAGREEMENT_PATIENCE + 1):
+        result = sensor.measure(_hardware_info(yaw=-90.0), np.pi / 2.0)
+
+    assert result is None
+    assert sensor.disabled
+    assert "IMU_YAW_SIGN is probably wrong" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "orientation", [None, {}, "unavailable", {"yaw": float("nan")}]
+)
+def test_imu_heading_falls_back_when_the_yaw_frame_drops(orientation) -> None:
+    sensor = lab2.ImuHeadingSensor(initial_heading=0.0)
+    info = _hardware_info()
+    info["orientation"] = orientation
+
+    assert sensor.measure(info, 0.0) is None
+
+
+def test_extract_measurement_prefers_the_imu_over_the_heading_echo() -> None:
+    sensor = lab2.ImuHeadingSensor(initial_heading=0.0)
+    # obs[2] is the command echo; 0.9 rad is deliberately not the true heading.
+    observation = np.array([0.0, 0.0, 0.9, 0.10, 0.0])
+
+    lab2.extract_measurement(
+        observation,
+        _hardware_info(yaw=0.0),
+        heading_sensor=sensor,
+        commanded_heading=0.0,
+    )
+    z = lab2.extract_measurement(
+        observation,
+        _hardware_info(yaw=45.0),
+        heading_sensor=sensor,
+        commanded_heading=np.pi / 4.0,
+    )
+
+    assert z[0] == pytest.approx(np.pi / 4.0)
+    assert z[0] != pytest.approx(0.9)
+
+
+def test_echoing_the_command_biases_the_speed_innovation() -> None:
+    """Why the encoder matters, reproduced from the filter alone.
+
+    Feeding the 0.10 command back as the measurement while the model predicts
+    the robot's response to that same command leaves a large one-sided
+    innovation instead of zero-mean noise.
+    """
+
+    ekf = EKF(initial_state=np.zeros(4))
+    action = np.array([0.10, 0.0])
+    innovations = []
+    for _ in range(80):
+        ekf.predict(action)
+        ekf.update(np.array([0.0, 0.10]))  # the command, echoed back
+        innovations.append(float(ekf.last_innovation[1]))
+
+    settled = float(np.mean(innovations[-20:]))
+    assert settled < 0.0
+    assert abs(settled) > np.sqrt(ekf.R[1, 1])
+
+
+def test_hardware_run_feeds_the_estimate_back_to_the_robot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The 2026-08-14 log has NaN est_*/cov_* because this call was missing."""
+
+    monkeypatch.setattr(lab2.time, "sleep", lambda _: None)
+    robot = _fake_robot()
+
+    with lab2.open_sim_env(False) as environment:
+        lab2.run_experiment(
+            environment, robot, render=False, teleop=False, seed=5178
+        )
+
+    assert robot.update_estimate.call_count == lab2.N_STEPS + 1
+    mean, covariance = robot.update_estimate.call_args[0]
+    assert np.all(np.isfinite(mean)) and mean.shape == (4,)
+    assert np.all(np.isfinite(covariance)) and covariance.shape == (4, 4)
+
+
+def test_hardware_run_tracks_heading_through_the_imu_not_the_echo(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """observation[2] stays at 0 while the square turns a full 360 degrees.
+
+    Ending the run near 0 would mean the filter followed the echo; following
+    the IMU means ending on the fourth leg's -90 degrees.
+    """
+
+    monkeypatch.setattr(lab2.time, "sleep", lambda _: None)
+    diagnostics = lab2.DiagnosticLog()
+
+    with lab2.open_sim_env(False) as environment:
+        lab2.run_experiment(
+            environment,
+            _fake_robot(),
+            render=False,
+            teleop=False,
+            seed=5178,
+            diagnostics=diagnostics,
+        )
+
+    assert "IMU_YAW_SIGN is probably wrong" not in capsys.readouterr().out
+
+    column = lab2.DiagnosticLog.COLUMNS.index("z_heading")
+    assert diagnostics.rows[-1][column] == pytest.approx(-np.pi / 2.0)
+
+
+def test_diagnostic_log_records_timing_and_raw_sensors(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(lab2.time, "sleep", lambda _: None)
+    diagnostics = lab2.DiagnosticLog()
+
+    with lab2.open_sim_env(False) as environment:
+        lab2.run_experiment(
+            environment,
+            None,
+            render=False,
+            teleop=False,
+            seed=5178,
+            diagnostics=diagnostics,
+        )
+
+    output = diagnostics.write(tmp_path / "diagnostics.csv")
+    with output.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.reader(handle))
+
+    assert tuple(rows[0]) == lab2.DiagnosticLog.COLUMNS
+    assert len(rows) == lab2.N_STEPS + 1
+    assert not list(tmp_path.glob("*.tmp"))
+
+    values = np.genfromtxt(output, delimiter=",", names=True)
+    # Timing must be monotonic so control-period drift is measurable.
+    assert np.all(np.diff(values["t_rel"]) > 0.0)
+    for column in ("nis", "nu_speed", "ekf_x", "P_xx"):
+        assert np.all(np.isfinite(values[column])), column
+
+
+def test_diagnostic_write_failure_does_not_mask_the_real_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Raising from the finally block would hide why the run actually died.
+
+    The diagnostic log is written on the way out of a failed run, so a disk
+    error there must not replace the dropped-BLE exception in flight.
+    """
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["lab2.py", "--sim", "--no-render", "--student-id", "33377006"],
+    )
+    monkeypatch.setattr(lab2.time, "sleep", lambda _: None)
+
+    def record_one_row_then_fail(sim_env, robot_env, *, diagnostics=None, **_):
+        if diagnostics is not None:
+            diagnostics.rows.append((0.0,) * len(lab2.DiagnosticLog.COLUMNS))
+        raise RuntimeError("BLE link dropped")
+
+    def fail_to_write(self, path):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(lab2, "run_experiment", record_one_row_then_fail)
+    monkeypatch.setattr(lab2.DiagnosticLog, "write", fail_to_write)
+
+    with pytest.raises(RuntimeError, match="BLE link dropped"):
+        lab2.main()
+
+    assert "could not write the diagnostic log" in capsys.readouterr().out
 
 
 def test_csv_validator_rejects_wrong_row_count(tmp_path: Path) -> None:

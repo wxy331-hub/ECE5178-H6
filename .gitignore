@@ -207,3 +207,12 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# code-review-graph knowledge graph (regenerated from the source tree)
+.code-review-graph/
+
+# Machine-specific overrides
+CLAUDE.local.md
+
+# Half-written submission CSVs from an interrupted run
+*.csv.tmp

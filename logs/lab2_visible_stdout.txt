@@ -1,0 +1,9 @@
+pygame 2.6.1 (SDL 2.28.4, Python 3.12.10)
+Hello from the pygame community. https://www.pygame.org/contribute.html
+Starting 200 steps; hardware speed limit is 15/255.
+Completed 50/200 steps
+Completed 100/200 steps
+Completed 150/200 steps
+Completed 200/200 steps
+Automarker CSV (simulation-only): D:\12591\Documents\ChatGPT\5178\labs\lab2\33377006_lab2.csv
+Simulation complete. Press Q or close the window to exit.

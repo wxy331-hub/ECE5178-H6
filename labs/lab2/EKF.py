@@ -12,14 +12,13 @@ import numpy as np
 
 
 # The equations and all response limits come from the calibrated Lab 1 model.
-# Lab 2 uses a slightly lower speed gain: the 2026-08-14 hardware runs produced
-# roughly 0.76--0.82 m EKF legs while the simulator produced 0.872--0.875 m
-# legs with the Lab 1 gain of 2.69.  A conservative first correction to 2.47
-# reduces that systematic size mismatch without adding a calibration phase.
+# The speed gain must stay equal to Lab 1's so the submitted m1_2 dynamics and
+# this filter describe the same robot; 2.69 is what differentiating the
+# hardware locator track gives (per-leg estimates span 2.42 to 3.42).
 MODEL_CONFIG = {
     "dt": 0.1,
     "max_speed_m_s": 0.50,
-    "speed_gain": 2.47,
+    "speed_gain": 2.69,
     "speed_time_constant_s": 0.216,
     "max_acceleration_m_s2": 1.79,
     "max_deceleration_m_s2": 1.33,
@@ -72,9 +71,7 @@ def _dynamics_float64(state: np.ndarray, action: np.ndarray) -> np.ndarray:
         if accelerating
         else MODEL_CONFIG["max_deceleration_m_s2"]
     )
-    speed_new = _move_towards(
-        float(speed), first_order_target, rate_limit * dt
-    )
+    speed_new = _move_towards(float(speed), first_order_target, rate_limit * dt)
     speed_new = float(np.clip(speed_new, -max_speed, max_speed))
 
     heading_mid = wrap_angle(float(heading) + 0.5 * heading_step)
@@ -82,9 +79,7 @@ def _dynamics_float64(state: np.ndarray, action: np.ndarray) -> np.ndarray:
     x_new = float(x) + speed_mid * np.sin(heading_mid) * dt
     y_new = float(y) + speed_mid * np.cos(heading_mid) * dt
 
-    return np.array(
-        [x_new, y_new, heading_new, speed_new], dtype=np.float64
-    )
+    return np.array([x_new, y_new, heading_new, speed_new], dtype=np.float64)
 
 
 def dynamics(state: np.ndarray, action: np.ndarray) -> np.ndarray:
@@ -138,11 +133,14 @@ class EKF:
             "initial_covariance",
         )
 
-        # These are safe initial values, not final calibration results.  Q and
-        # R will be tuned from repeated simulation and real sensor logs.
-        # Position noise was selected with a 100-seed simulation sweep.  The
-        # smallest tested value that passed both published consistency limits
-        # for every run was 1.25 * 2.5e-6 = 3.125e-6 m^2 per step.
+        # Safe initial values, not final calibration results.  Q's position
+        # entry is the smallest value that passed both consistency limits
+        # across a 100-seed simulation sweep.  R's speed entry is still the
+        # simulator's obs_noise_std_vel of 0.025 m/s, which no longer
+        # describes the source: hardware speed now comes from the wheel
+        # encoders, whose noise has never been measured on this robot.  It is
+        # left unchanged rather than guessed -- logs/lab2_diagnostics.csv
+        # records the innovations needed to estimate it from one run.
         default_q = np.diag([3.125e-6, 3.125e-6, 1.0e-4, 2.5e-5])
         default_r = np.diag([6.25e-4, 6.25e-4])
         self.Q = self._validate_covariance(
@@ -279,9 +277,7 @@ class EKF:
 
         innovation_covariance = self.H @ self.P @ self.H.T + self.R
         p_h_transpose = self.P @ self.H.T
-        kalman_gain = np.linalg.solve(
-            innovation_covariance, p_h_transpose.T
-        ).T
+        kalman_gain = np.linalg.solve(innovation_covariance, p_h_transpose.T).T
 
         self.state_est = self.state_est + kalman_gain @ innovation
         self.state_est[2] = wrap_angle(self.state_est[2])

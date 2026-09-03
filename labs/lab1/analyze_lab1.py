@@ -6,13 +6,17 @@ import argparse
 import csv
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import numpy as np
 
 
+# Single source of truth for the Lab 1 task specification (instructions.md).
+# lab1.py imports TARGET from here so the controller and the marker can never
+# disagree about where the robot is supposed to go.
 TARGET = np.array([0.5, 0.5], dtype=float)
 REQUIRED_COLUMNS = ("sim_x", "sim_y", "real_x", "real_y")
 EXPECTED_ROWS = 100
+FINAL_DISTANCE_LIMIT = 0.10
+TRAJECTORY_RMSE_LIMIT = 0.20
 
 
 def read_submission(path: Path) -> tuple[np.ndarray, np.ndarray]:
@@ -38,6 +42,9 @@ def read_submission(path: Path) -> tuple[np.ndarray, np.ndarray]:
 
 
 def save_plot(sim: np.ndarray, real: np.ndarray, output_path: Path) -> None:
+    # Imported lazily so lab1.py can reuse TARGET without pulling in matplotlib.
+    import matplotlib.pyplot as plt
+
     point_error = np.linalg.norm(sim - real, axis=1)
 
     figure, axes = plt.subplots(1, 2, figsize=(11, 4.5))
@@ -54,7 +61,12 @@ def save_plot(sim: np.ndarray, real: np.ndarray, output_path: Path) -> None:
     axes[0].legend()
 
     axes[1].plot(np.arange(1, len(point_error) + 1), point_error, color="tab:red")
-    axes[1].axhline(0.20, color="black", linestyle="--", label="RMSE threshold reference")
+    axes[1].axhline(
+        TRAJECTORY_RMSE_LIMIT,
+        color="black",
+        linestyle="--",
+        label="RMSE threshold reference",
+    )
     axes[1].set_title("Pointwise sim-to-real error")
     axes[1].set_xlabel("Control step")
     axes[1].set_ylabel("Position error (m)")
@@ -81,9 +93,12 @@ def main() -> int:
     save_plot(sim, real, plot_path)
 
     checks = {
-        "Simulation final distance <= 0.10 m": sim_final_distance <= 0.10,
-        "Real final distance <= 0.10 m": real_final_distance <= 0.10,
-        "Trajectory RMSE <= 0.20 m": trajectory_rmse <= 0.20,
+        f"Simulation final distance <= {FINAL_DISTANCE_LIMIT:.2f} m":
+            sim_final_distance <= FINAL_DISTANCE_LIMIT,
+        f"Real final distance <= {FINAL_DISTANCE_LIMIT:.2f} m":
+            real_final_distance <= FINAL_DISTANCE_LIMIT,
+        f"Trajectory RMSE <= {TRAJECTORY_RMSE_LIMIT:.2f} m":
+            trajectory_rmse <= TRAJECTORY_RMSE_LIMIT,
     }
     print(f"Simulation final distance: {sim_final_distance:.4f} m")
     print(f"Real final distance:       {real_final_distance:.4f} m")
