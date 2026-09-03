@@ -29,6 +29,13 @@ EXPECTED_STEPS = 200
 DT = 0.1
 CHI2_95_2DOF = 5.991464547107979
 
+# Two-sided 95% interval for a chi-square with 2 degrees of freedom, which is
+# what instructions.md asks NIS to be judged against.  For 2 DoF the CDF is
+# 1 - exp(-x/2), so the quantiles are -2*ln(1-p) in closed form.
+CHI2_LOWER = -2.0 * np.log(0.975)   # 0.0506
+CHI2_UPPER = -2.0 * np.log(0.025)   # 7.3778
+NIS_PLOT = LAB_DIR.parents[1] / "logs" / "lab2_nis.png"
+
 PASS, FAIL, WARN, SKIP = "PASS", "FAIL", "WARN", "n/a "
 
 
@@ -242,15 +249,59 @@ def check_imu_sign(log: dict[str, np.ndarray], report: Report) -> None:
         )
 
 
+def plot_nis(log: dict[str, np.ndarray], path: Path) -> Path | None:
+    """Plot NIS against the two-sided chi-square bounds, as the brief asks."""
+
+    nis = log["nis"]
+    if not np.any(np.isfinite(nis)):
+        return None
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return None
+
+    steps = np.arange(len(nis))
+    figure, axis = plt.subplots(figsize=(10, 4.2))
+    axis.plot(steps, nis, lw=1.0, label="NIS")
+    axis.axhline(CHI2_UPPER, color="red", ls="--",
+                 label=f"95% upper ({CHI2_UPPER:.2f})")
+    axis.axhline(CHI2_LOWER, color="orange", ls="--",
+                 label=f"95% lower ({CHI2_LOWER:.3f})")
+    axis.axhline(2.0, color="green", ls=":", label="expected mean (2 DoF)")
+    axis.fill_between(steps, CHI2_LOWER, CHI2_UPPER, color="green", alpha=0.08)
+    axis.set_yscale("log")
+    axis.set_xlabel("Control step")
+    axis.set_ylabel("NIS")
+    high = float(np.mean(nis[np.isfinite(nis)] > CHI2_UPPER))
+    low = float(np.mean(nis[np.isfinite(nis)] < CHI2_LOWER))
+    axis.set_title(
+        f"Normalised innovation squared -- {1 - high - low:.0%} inside the "
+        f"band, {high:.0%} high, {low:.0%} low"
+    )
+    axis.grid(alpha=0.3)
+    axis.legend(fontsize=8, ncol=2)
+    figure.tight_layout()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(path, dpi=110)
+    plt.close(figure)
+    return path
+
+
 def check_consistency(log: dict[str, np.ndarray], report: Report) -> None:
     nis = log["nis"][np.isfinite(log["nis"])]
     if nis.size == 0:
         return
     mean_nis = float(np.mean(nis))
     inside = float(np.mean(nis <= CHI2_95_2DOF))
+    above = float(np.mean(nis > CHI2_UPPER))
+    below = float(np.mean(nis < CHI2_LOWER))
     detail = (
         f"mean NIS {mean_nis:.2f} (theory 2.00 for 2 DoF); "
-        f"{inside:.0%} within the 95% gate."
+        f"{inside:.0%} within the 95% gate, and against the two-sided band "
+        f"[{CHI2_LOWER:.3f}, {CHI2_UPPER:.2f}]: {above:.0%} high, "
+        f"{below:.0%} low."
     )
     if 1.0 <= mean_nis <= 4.0 and inside >= 0.90:
         report.add(PASS, "Filter consistency", detail)
@@ -312,6 +363,11 @@ def main() -> int:
     if not hardware:
         print("  This log has no hardware sensor columns, so the sensor-source")
         print("  checks below cannot say anything. Run without --sim.\n")
+
+    plot = plot_nis(log, NIS_PLOT)
+    if plot is not None:
+        print(f"  NIS plot     : {plot}")
+        print()
 
     report = Report()
     check_completeness(log, report)
