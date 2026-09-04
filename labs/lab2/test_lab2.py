@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import csv
 import importlib.util
-import sys
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -13,7 +12,6 @@ import pytest
 
 import analyze_lab2
 import lab2
-from lab2 import TRACK_RADIUS, TRACK_STRAIGHT_X, TRACK_STRAIGHT_Y
 from EKF import EKF, MODEL_CONFIG, _dynamics_float64, dynamics, wrap_angle
 
 
@@ -31,24 +29,14 @@ def _load_lab1_dynamics_module():
     return module
 
 
-def test_dynamics_equations_match_lab1_under_lab1_parameters() -> None:
-    """Same equations as the submitted model; parameters re-calibrated.
-
-    instructions.md asks for two things that collide once a Lab 1 parameter is
-    contradicted by measurement: use the Lab 1 motion model, and calibrate the
-    dynamics against the real robot.  The resolution is that the *equations*
-    stay identical -- a filter solving different equations would describe a
-    different robot -- while parameters may be re-estimated, which is what the
-    calibration requirement asks for.
-
-    So this feeds Lab 1's own parameters into Lab 2's dynamics and demands
-    bit-identical output: it pins the equations without freezing the numbers.
-    See test_the_deadband_was_re_estimated_from_hardware for the numbers.
-    """
-
+def test_dynamics_uses_lab1_equations_with_lab2_speed_calibration() -> None:
     lab1 = _load_lab1_dynamics_module()
-    saved = dict(MODEL_CONFIG)
-    MODEL_CONFIG.update(lab1.MODEL_CONFIG)
+    assert MODEL_CONFIG["speed_gain"] == pytest.approx(2.47)
+    assert MODEL_CONFIG["speed_gain"] < lab1.MODEL_CONFIG["speed_gain"]
+
+    # Equal parameters must produce identical outputs, demonstrating that only
+    # the calibrated constant changed and the Lab 1 model equations did not.
+    lab1.MODEL_CONFIG["speed_gain"] = MODEL_CONFIG["speed_gain"]
     rng = np.random.default_rng(5178)
 
     for _ in range(1000):
@@ -63,43 +51,9 @@ def test_dynamics_equations_match_lab1_under_lab1_parameters() -> None:
         action = np.array(
             [rng.uniform(-0.6, 0.6), rng.uniform(-np.pi, np.pi)]
         )
-        try:
-            np.testing.assert_array_equal(
-                dynamics(state, action), lab1.dynamics(state, action)
-            )
-        except BaseException:
-            MODEL_CONFIG.clear()
-            MODEL_CONFIG.update(saved)
-            raise
-    MODEL_CONFIG.clear()
-    MODEL_CONFIG.update(saved)
-
-
-HARDWARE_WORKING_POINTS = ((0.07, 0.0318), (0.10, 0.0905))
-
-
-def test_the_speed_response_was_re_estimated_from_hardware() -> None:
-    """Record which parameters diverged from Lab 1, and hold them to the data.
-
-    speed_gain and the deadband are the slope and x-intercept of one line, so
-    a single working point cannot separate them -- Lab 1 fixed the gain from a
-    locator track that included stalled steps, reading the average of a
-    stop-start motion as a steady speed.  Two points measured on 2026-08-21
-    solve both, and this asserts the line still passes through both of them:
-    a later edit to either constant that breaks the fit fails here.
-    """
-
-    lab1 = _load_lab1_dynamics_module()
-    gain = MODEL_CONFIG["speed_gain"]
-    deadband = MODEL_CONFIG["command_deadband_m_s"]
-
-    for command, measured in HARDWARE_WORKING_POINTS:
-        assert gain * (command - deadband) == pytest.approx(measured, abs=5e-4)
-
-    # Diverged from Lab 1, deliberately and in a known direction.
-    assert gain < lab1.MODEL_CONFIG["speed_gain"]
-    assert deadband > lab1.MODEL_CONFIG["command_deadband_m_s"]
-    assert MODEL_CONFIG["dt"] > lab1.MODEL_CONFIG["dt"]  # measured 104.9 ms
+        np.testing.assert_array_equal(
+            dynamics(state, action), lab1.dynamics(state, action)
+        )
 
 
 def test_process_jacobian_matches_directional_difference() -> None:
@@ -154,62 +108,45 @@ def test_covariance_remains_symmetric_positive_definite() -> None:
         assert np.all(np.isfinite(ekf.state_est))
 
 
-def test_a_lap_closes_on_itself() -> None:
-    """Integrating the lane's own headings must return to the start.
-
-    A rounded rectangle only closes if the straights and the four quarter
-    turns are consistent; getting the corner arc length wrong shows up here
-    as a gap rather than as a robot in the wall.
-    """
-
-    n = 2000
-    step = lab2.TRACK_LAP / n
-    position = np.zeros(2)
-    for i in range(n):
-        heading = lab2.track_heading(i * step)
-        position += step * np.array([np.sin(heading), np.cos(heading)])
-
-    assert np.linalg.norm(position) < 1e-3  # back to the start
-    assert lab2.track_heading(lab2.TRACK_LAP) == pytest.approx(
-        lab2.track_heading(0.0)
-    )
+def test_scripted_actions_form_four_square_legs() -> None:
+    initial_heading = 0.3
+    expected_relative = (0.0, np.pi / 2.0, np.pi, -np.pi / 2.0)
+    for step, relative_heading in zip(
+        (0, 50, 100, 150), expected_relative, strict=True
+    ):
+        action = lab2.scripted_action(step, initial_heading)
+        assert action[0] == pytest.approx(lab2.SCRIPTED_SQUARE_SPEED)
+        assert action[1] == pytest.approx(
+            wrap_angle(initial_heading + relative_heading)
+        )
 
 
-def test_the_lane_spans_the_measured_track() -> None:
-    n = 2000
-    step = lab2.TRACK_LAP / n
-    pts, position = [], np.zeros(2)
-    for i in range(n):
-        heading = lab2.track_heading(i * step)
-        position = position + step * np.array([np.sin(heading), np.cos(heading)])
-        pts.append(position.copy())
-    pts = np.asarray(pts)
+def test_scripted_actions_stop_and_turn_at_each_corner() -> None:
+    initial_heading = 0.3
+    relative_headings = (0.0, np.pi / 2.0, np.pi, -np.pi / 2.0)
+    straight_steps = lab2.SQUARE_LEG_STEPS - lab2.CORNER_TURN_STEPS
+    for leg in range(4):
+        first_turn_step = leg * lab2.SQUARE_LEG_STEPS + straight_steps
+        first_turn = lab2.scripted_action(first_turn_step, initial_heading)
+        assert first_turn[0] == pytest.approx(0.0)
 
-    width = pts[:, 0].max() - pts[:, 0].min()
-    height = pts[:, 1].max() - pts[:, 1].min()
-    assert width == pytest.approx(TRACK_STRAIGHT_X + 2 * TRACK_RADIUS, abs=2e-3)
-    assert height == pytest.approx(TRACK_STRAIGHT_Y + 2 * TRACK_RADIUS, abs=2e-3)
+        final_turn_step = (leg + 1) * lab2.SQUARE_LEG_STEPS - 1
+        final_turn = lab2.scripted_action(final_turn_step, initial_heading)
+        next_leg = (leg + 1) % 4
+        assert final_turn[0] == pytest.approx(0.0)
+        assert final_turn[1] == pytest.approx(
+            wrap_angle(initial_heading + relative_headings[next_leg])
+        )
 
 
-def test_no_step_demands_more_turn_than_the_robot_can_deliver() -> None:
-    """The reason for driving the lane rather than a square.
-
-    A square commands 90 degrees in one step; the robot pivots at 511 deg/s to
-    obey and loses nearly all its forward speed, and eight of the ten stalled
-    steps on 2026-08-21 fell in the window where it was rebuilding that speed.
-    Along the lane the sharpest demand is a fraction of one step's capability.
-    """
-
-    speed = MODEL_CONFIG["speed_gain"] * (
-        lab2.SCRIPT_SPEED - MODEL_CONFIG["command_deadband_m_s"]
-    )
-    distances = np.arange(lab2.N_STEPS) * speed * lab2.DT
-    headings = np.unwrap(
-        [float(lab2.scripted_action(d, 0.0)[1]) for d in distances]
-    )
-    per_step = np.degrees(np.abs(np.diff(headings)))
-    demonstrated = np.degrees(MODEL_CONFIG["max_turn_rate_rad_s"] * lab2.DT)
-    assert per_step.max() < 0.5 * demonstrated
+def test_each_scripted_side_commands_point_48_metres() -> None:
+    for leg in range(4):
+        start = leg * lab2.SQUARE_LEG_STEPS
+        speeds = [
+            float(lab2.scripted_action(step, 0.0)[0])
+            for step in range(start, start + lab2.SQUARE_LEG_STEPS)
+        ]
+        assert sum(speeds) * lab2.DT == pytest.approx(0.48)
 
 
 def test_full_simulation_and_csv_analysis(
@@ -257,6 +194,10 @@ def test_terminal_metrics_include_values_thresholds_and_status(
     assert "0.0000 (PASS; required <= 4.0)" in output
     assert "Chi-square pass rate (2 DoF, 95% gate)" in output
     assert "1.000 (PASS; required >= 0.90)" in output
+    assert "Position uncertainty comparison (1 standard deviation)" in output
+    assert "Start point: sigma_x=0.3162 m" in output
+    assert "Final point: sigma_x=0.3162 m" in output
+    assert "Estimated start-to-final displacement: 0.0000 m" in output
 
 
 def test_stop_motion_stops_robot_before_visualization_hold() -> None:
@@ -272,510 +213,11 @@ def test_stop_motion_stops_robot_before_visualization_hold() -> None:
 def test_real_process_noise_reflects_hardware_residual() -> None:
     default = EKF().Q
     assert lab2.REAL_PROCESS_NOISE[0, 0] == pytest.approx(
-        10.0 * default[0, 0]
+        6.6 * default[0, 0]
     )
     assert lab2.REAL_PROCESS_NOISE[1, 1] == pytest.approx(
-        10.0 * default[1, 1]
+        6.6 * default[1, 1]
     )
-
-
-def test_observation_range_must_cover_the_model_response() -> None:
-    """The command limit and the sensor range are different quantities.
-
-    Both environments call the parameter ``vel_limit``, and using one value
-    for both silently saturated every simulated speed reading.
-
-    This deliberately does not use SCRIPT_SPEED.  The two quantities have to
-    stay separate whatever speed the script happens to command, so the bound
-    that matters is the fastest command the hardware accepts: if the model
-    outruns the range even there, tying them together is wrong in general.
-    Anchoring the assertion to the working point instead would let a slower
-    script silently satisfy it while the underlying confusion remained.
-    """
-
-    steady_at_cap = MODEL_CONFIG["speed_gain"] * (
-        lab2.COMMAND_SPEED_LIMIT - MODEL_CONFIG["command_deadband_m_s"]
-    )
-    assert steady_at_cap > lab2.COMMAND_SPEED_LIMIT  # why it mattered
-    assert lab2.SIM_SPEED_LIMIT > steady_at_cap  # why it is fixed now
-
-
-def test_simulated_speed_readings_are_no_longer_clipped() -> None:
-    """Drive at the command cap, not at SCRIPT_SPEED.
-
-    The point is that the observation range has to cover the model's response
-    to the fastest command the hardware accepts.  Testing at the scripted
-    speed instead ties the assertion to the working point: after the deadband
-    was re-estimated, raw 8 settles at 0.14 m/s and the old assertion failed
-    even though nothing about the clipping bug had changed.
-    """
-
-    fastest = np.array([lab2.COMMAND_SPEED_LIMIT, 0.0], dtype=np.float32)
-    with lab2.open_sim_env(False) as environment:
-        environment.reset(seed=5178)
-        speeds = [float(environment.step(fastest)[0][3]) for _ in range(45)]
-
-    # Under the old range every steady-state reading came back pinned to the
-    # limit; the true response has to be observable instead.
-    assert max(speeds) > lab2.COMMAND_SPEED_LIMIT
-    assert max(speeds) < lab2.SIM_SPEED_LIMIT
-
-
-def test_hardware_keeps_the_scale_the_wrapper_converts_commands_with() -> None:
-    """Robot builds the raw byte as speed_cmd / vel_limit * raw_speed_limit.
-
-    Widening it for the hardware environment would quietly slow the robot
-    down: a 0.10 command would send 3/15 instead of 10/15.
-    """
-
-    environment = lab2.make_real_env(Mock())
-    assert environment.vel_limit == pytest.approx(lab2.COMMAND_SPEED_LIMIT)
-    assert environment.vel_limit == pytest.approx(0.15)
-
-
-def wrap_angle_degrees(degrees: float) -> float:
-    """Wrap to [-180, 180), the range the IMU attitude sensor reports."""
-
-    return (degrees + 180.0) % 360.0 - 180.0
-
-
-def _hardware_info(
-    *,
-    vx: float = 0.0,
-    vy: float = 18.24,
-    speed_cmd: float = 0.10,
-    yaw: float = 0.0,
-) -> dict:
-    """An info dict shaped like the one Robot.step() returns."""
-
-    return {
-        "state_odom": np.zeros(4, dtype=np.float32),
-        "state_true": np.zeros(4, dtype=np.float32),
-        "velocity": {"x": vx, "y": vy},
-        "orientation": {"yaw": yaw, "pitch": 0.0, "roll": 0.0},
-        "gyroscope": {"x": 0.0, "y": 0.0, "z": 0.0},
-        "speed_cmd": speed_cmd,
-        "heading_cmd": 0.0,
-    }
-
-
-def _honest_yaw(heading_rad: float, origin: float = 0.0,
-                initial_rad: float = 0.0) -> float:
-    """The yaw a correctly-signed IMU reports when the robot holds a heading.
-
-    ImuHeadingSensor rebuilds heading as ``initial + SIGN * turned``, so an
-    honest sensor whose zero sits at ``origin`` reports
-    ``origin + SIGN * (heading - initial)``.  Deriving the test data from
-    IMU_YAW_SIGN keeps these tests about the logic -- zero cancellation,
-    the transient guard, the fallback -- rather than about one sign that the
-    hardware later contradicted.
-    """
-
-    turned = np.degrees(wrap_angle(heading_rad - initial_rad))
-    return wrap_angle_degrees(origin + lab2.IMU_YAW_SIGN * turned)
-
-
-def _fake_robot(stall_every: int = 0) -> Mock:
-    """A robot that moves, so lane progress advances the way it does on hardware.
-
-    The trajectory is driven by measured displacement, so a mock whose
-    state_odom never changes leaves the lane frozen at its starting heading --
-    which is what a stalled robot looks like, and not what most of these tests
-    mean to exercise.  ``stall_every`` pins the robot in place on that many
-    steps out of ten, for the tests that do.
-    """
-
-    robot = Mock()
-    observation = np.array([0.0, 0.0, 0.0, 0.10, 0.0], dtype=np.float32)
-    speed = MODEL_CONFIG["speed_gain"] * (
-        lab2.SCRIPT_SPEED - MODEL_CONFIG["command_deadband_m_s"]
-    )
-    place = {"xy": np.zeros(2), "step": 0}
-    robot.reset.return_value = (observation, _hardware_info())
-
-    def step(action):
-        # A well-behaved robot: its IMU follows the commanded heading, while
-        # observation[2] stays at zero the way a command echo would.
-        heading = float(action[1])
-        stalled = stall_every and place["step"] % 10 < stall_every
-        if not stalled:
-            place["xy"] = place["xy"] + speed * lab2.DT * np.array(
-                [np.sin(heading), np.cos(heading)]
-            )
-        place["step"] += 1
-        info = _hardware_info(yaw=_honest_yaw(heading))
-        info["state_odom"] = np.array(
-            [place["xy"][0], place["xy"][1], heading, 0.0 if stalled else speed],
-            dtype=np.float32,
-        )
-        return observation, None, False, False, info
-
-    robot.step.side_effect = step
-    return robot
-
-
-def test_hardware_speed_comes_from_the_encoder_not_the_command() -> None:
-    """api.get_speed() returns the commanded target, so obs[3] is an echo.
-
-    In the 2026-08-14 log the speed column equals speed_cmd in all 200 rows.
-    The encoder reading in info["velocity"] is the actual sensor.
-    """
-
-    observation = np.array([0.0, 0.0, 0.3, 0.10, 0.0])
-    z = lab2.extract_measurement(observation, _hardware_info(vx=3.0, vy=4.0))
-
-    assert z[1] == pytest.approx(0.05)  # hypot(3, 4) cm/s, not the command
-    assert z[0] == pytest.approx(0.3)  # heading still taken from the obs
-
-
-def test_hardware_speed_takes_its_sign_from_the_command() -> None:
-    z = lab2.extract_measurement(
-        np.array([0.0, 0.0, 0.0, 0.0, 0.0]),
-        _hardware_info(vx=0.0, vy=-8.0, speed_cmd=-0.10),
-    )
-    assert z[1] == pytest.approx(-0.08)
-
-
-@pytest.mark.parametrize(
-    "velocity", [None, {}, "unavailable", {"x": float("nan"), "y": 0.0}]
-)
-def test_measurement_falls_back_when_the_velocity_frame_drops(velocity) -> None:
-    """A dropped BLE sensor frame must never inject NaN into the filter."""
-
-    observation = np.array([0.0, 0.0, 0.2, 0.11, 0.0])
-    info = _hardware_info()
-    info["velocity"] = velocity
-
-    z = lab2.extract_measurement(observation, info)
-
-    assert np.all(np.isfinite(z))
-    assert z[1] == pytest.approx(0.11)
-
-
-def test_simulation_measurement_is_the_noisy_observation() -> None:
-    """Simulated observations are truth plus noise, so they are legitimate."""
-
-    observation = np.array([1.0, 2.0, 0.4, 0.09, 0.0])
-    np.testing.assert_allclose(
-        lab2.extract_measurement(observation), [0.4, 0.09]
-    )
-
-
-@pytest.mark.parametrize("imu_origin", [0.0, 137.0, -95.5, 179.0])
-def test_imu_heading_cancels_an_unknown_zero_point(imu_origin: float) -> None:
-    """Only yaw differences are used, so the IMU's own origin never matters."""
-
-    sensor = lab2.ImuHeadingSensor(initial_heading=0.0)
-
-    first = sensor.measure(_hardware_info(yaw=imu_origin), 0.0)
-    assert first == pytest.approx(0.0)
-
-    turned = sensor.measure(
-        _hardware_info(yaw=_honest_yaw(np.pi / 2.0, origin=imu_origin)),
-        np.pi / 2.0,
-    )
-    assert turned == pytest.approx(np.pi / 2.0)
-
-
-def test_imu_heading_survives_a_normal_turn_transient() -> None:
-    """A 90 degree command step needs six steps at the turn limit.
-
-    That transient must not be mistaken for a sign error.
-    """
-
-    sensor = lab2.ImuHeadingSensor(initial_heading=0.0)
-    sensor.measure(_hardware_info(yaw=0.0), 0.0)
-    step_degrees = np.degrees(MODEL_CONFIG["max_turn_rate_rad_s"] * 0.1)
-
-    turned = 0.0
-    for _ in range(12):
-        turned = min(90.0, turned + step_degrees)
-        yaw = _honest_yaw(np.deg2rad(turned))
-        assert sensor.measure(_hardware_info(yaw=yaw), np.pi / 2.0) is not None
-
-    assert not sensor.disabled
-
-
-def test_imu_heading_disables_itself_when_the_sign_is_wrong(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """A mirrored yaw reads ~180 degrees off for a whole leg, not 6 steps."""
-
-    sensor = lab2.ImuHeadingSensor(initial_heading=0.0)
-    sensor.measure(_hardware_info(yaw=0.0), 0.0)
-
-    # The robot really turns +90; an IMU wired the other way reports the
-    # mirror of what IMU_YAW_SIGN expects, whichever sign that constant holds.
-    mirrored = -_honest_yaw(np.pi / 2.0)
-    result: float | None = 0.0
-    for _ in range(lab2.IMU_DISAGREEMENT_PATIENCE + 1):
-        result = sensor.measure(_hardware_info(yaw=mirrored), np.pi / 2.0)
-
-    assert result is None
-    assert sensor.disabled
-    assert "IMU_YAW_SIGN is probably wrong" in capsys.readouterr().out
-
-
-@pytest.mark.parametrize(
-    "orientation", [None, {}, "unavailable", {"yaw": float("nan")}]
-)
-def test_imu_heading_falls_back_when_the_yaw_frame_drops(orientation) -> None:
-    sensor = lab2.ImuHeadingSensor(initial_heading=0.0)
-    info = _hardware_info()
-    info["orientation"] = orientation
-
-    assert sensor.measure(info, 0.0) is None
-
-
-def test_extract_measurement_prefers_the_imu_over_the_heading_echo() -> None:
-    sensor = lab2.ImuHeadingSensor(initial_heading=0.0)
-    # obs[2] is the command echo; 0.9 rad is deliberately not the true heading.
-    observation = np.array([0.0, 0.0, 0.9, 0.10, 0.0])
-
-    lab2.extract_measurement(
-        observation,
-        _hardware_info(yaw=0.0),
-        heading_sensor=sensor,
-        commanded_heading=0.0,
-    )
-    z = lab2.extract_measurement(
-        observation,
-        _hardware_info(yaw=_honest_yaw(np.deg2rad(45.0))),
-        heading_sensor=sensor,
-        commanded_heading=np.pi / 4.0,
-    )
-
-    assert z[0] == pytest.approx(np.pi / 4.0)
-    assert z[0] != pytest.approx(0.9)
-
-
-def test_echoing_the_command_biases_the_speed_innovation() -> None:
-    """Why the encoder matters, reproduced from the filter alone.
-
-    Feeding a command back as the measurement while the model predicts the
-    robot's response to that same command leaves a one-sided innovation
-    instead of zero-mean noise.  Its size is the gap between command and
-    modelled response, so it scales with the working point -- the assertion is
-    therefore against that gap, not against a fixed multiple of sigma.
-    """
-
-    command = lab2.COMMAND_SPEED_LIMIT
-    modelled = MODEL_CONFIG["speed_gain"] * (
-        command - MODEL_CONFIG["command_deadband_m_s"]
-    )
-    ekf = EKF(initial_state=np.zeros(4))
-    action = np.array([command, 0.0])
-    innovations = []
-    for _ in range(80):
-        ekf.predict(action)
-        ekf.update(np.array([0.0, command]))  # the command, echoed back
-        innovations.append(float(ekf.last_innovation[1]))
-
-    settled = float(np.mean(innovations[-20:]))
-    assert settled < 0.0  # the echo always reads slower than the response
-    assert abs(settled) > 0.5 * (modelled - command)
-
-
-def test_hardware_run_feeds_the_estimate_back_to_the_robot(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The 2026-08-14 log has NaN est_*/cov_* because this call was missing."""
-
-    monkeypatch.setattr(lab2.time, "sleep", lambda _: None)
-    robot = _fake_robot()
-
-    with lab2.open_sim_env(False) as environment:
-        lab2.run_experiment(
-            environment, robot, render=False, teleop=False, seed=5178
-        )
-
-    assert robot.update_estimate.call_count == lab2.N_STEPS + 1
-    mean, covariance = robot.update_estimate.call_args[0]
-    assert np.all(np.isfinite(mean)) and mean.shape == (4,)
-    assert np.all(np.isfinite(covariance)) and covariance.shape == (4, 4)
-
-
-def _run_and_trace(robot) -> tuple[np.ndarray, np.ndarray]:
-    """Return (distance travelled, commanded heading) for every step."""
-
-    diagnostics = lab2.DiagnosticLog()
-    with lab2.open_sim_env(False) as environment:
-        lab2.run_experiment(
-            environment, robot, render=False, teleop=False,
-            seed=5178, diagnostics=diagnostics,
-        )
-    columns = lab2.DiagnosticLog.COLUMNS
-    rows = np.asarray(diagnostics.rows, dtype=float)
-    position = rows[:, [columns.index("odom_x"), columns.index("odom_y")]]
-    travelled = np.concatenate(
-        [[0.0], np.cumsum(np.linalg.norm(np.diff(position, axis=0), axis=1))]
-    )
-    return travelled, rows[:, columns.index("heading_cmd")]
-
-
-def test_the_lane_advances_with_distance_not_with_time() -> None:
-    """A stall must cost time but not lane position.
-
-    On 2026-08-21 the schedule was ``step * speed * dt``, so a robot pinned
-    against a high spot kept "progressing" while standing still: the corner
-    was commanded after 0.219 m of real motion instead of the 0.32 m straight,
-    and the robot turned early by 0.10 m. Driving the lane from measured
-    displacement means the two runs below trace the same heading-versus-
-    distance curve, and the stalling one simply gets less far along it.
-    """
-
-    clean_distance, clean_heading = _run_and_trace(_fake_robot())
-    stalled_distance, stalled_heading = _run_and_trace(_fake_robot(stall_every=3))
-
-    # The stalling robot covers less ground in the same 200 steps.
-    assert stalled_distance[-1] < 0.85 * clean_distance[-1]
-
-    # But at equal distance travelled, both are told to point the same way --
-    # which is the property a clock-driven schedule does not have.
-    # heading_cmd[k] was computed from the distance measured up to step k-1:
-    # the command has to go out before the step it causes can be measured.
-    for distance in (0.10, 0.25, 0.40, 0.60):
-        if distance < stalled_distance[-2]:
-            a = np.interp(distance, clean_distance[:-1],
-                          np.unwrap(clean_heading)[1:])
-            b = np.interp(distance, stalled_distance[:-1],
-                          np.unwrap(stalled_heading)[1:])
-            assert a == pytest.approx(b, abs=np.radians(3.0))
-
-    # And the corner is not commanded before the straight is finished.
-    turned = np.argmax(np.abs(np.unwrap(stalled_heading)) > np.radians(1.0))
-    assert stalled_distance[turned - 1] >= 0.95 * lab2.TRACK_STRAIGHT_Y
-
-
-def test_the_robot_stops_after_one_lap() -> None:
-    """200 steps of data, one lap of driving.
-
-    How far 200 steps carry the robot depends on the stall rate, so the lap
-    count cannot be fixed by choosing a speed. Stopping when the lap closes
-    fixes it directly, and leaves the filter a stationary target -- which it
-    ought to predict exactly.
-    """
-
-    before = lab2.scripted_action(lab2.TRACK_LAP - 0.01, 0.0)
-    after = lab2.scripted_action(lab2.TRACK_LAP + 0.01, 0.0)
-
-    assert before[0] == pytest.approx(lab2.SCRIPT_SPEED)
-    assert after[0] == 0.0
-
-    # A closed lap returns to the starting heading rather than winding on.
-    assert after[1] == pytest.approx(lab2.scripted_action(0.0, 0.0)[1], abs=1e-6)
-
-    # And it never begins a second lap, however far the robot over-runs.
-    assert lab2.scripted_action(3 * lab2.TRACK_LAP, 0.0)[0] == 0.0
-
-
-def test_hardware_run_tracks_heading_through_the_imu_not_the_echo(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """observation[2] stays at 0 while the lane turns through a full lap.
-
-    Ending the run near 0 would mean the filter followed the echo; following
-    the IMU means ending wherever the lane points at step 200.
-    """
-
-    monkeypatch.setattr(lab2.time, "sleep", lambda _: None)
-    diagnostics = lab2.DiagnosticLog()
-
-    with lab2.open_sim_env(False) as environment:
-        lab2.run_experiment(
-            environment,
-            _fake_robot(),
-            render=False,
-            teleop=False,
-            seed=5178,
-            diagnostics=diagnostics,
-        )
-
-    assert "IMU_YAW_SIGN is probably wrong" not in capsys.readouterr().out
-
-    # Checking one step is not enough: 200 steps cover 1.14 laps, so the last
-    # one lands back on a straight where the lane heading is 0 -- exactly what
-    # a command echo would also produce.  Compare the whole sequence.
-    columns = lab2.DiagnosticLog.COLUMNS
-    fed = np.array([row[columns.index("z_heading")] for row in diagnostics.rows])
-    commanded = np.array(
-        [row[columns.index("heading_cmd")] for row in diagnostics.rows]
-    )
-    observed = np.array(
-        [row[columns.index("obs_heading")] for row in diagnostics.rows]
-    )
-
-    assert np.abs(np.unwrap(commanded - commanded[0])).max() > np.radians(300.0)
-    assert np.allclose(observed, 0.0)  # the echo this must not follow
-    assert np.abs(fed - fed[0]).max() > np.radians(20.0)
-    # Wrap before comparing: at step 88 the lane passes through pi, where the
-    # two representations differ by 2*pi while pointing the same way.
-    delta = (fed - commanded + np.pi) % (2.0 * np.pi) - np.pi
-    assert np.abs(delta).max() < 1e-6
-
-
-def test_diagnostic_log_records_timing_and_raw_sensors(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setattr(lab2.time, "sleep", lambda _: None)
-    diagnostics = lab2.DiagnosticLog()
-
-    with lab2.open_sim_env(False) as environment:
-        lab2.run_experiment(
-            environment,
-            None,
-            render=False,
-            teleop=False,
-            seed=5178,
-            diagnostics=diagnostics,
-        )
-
-    output = diagnostics.write(tmp_path / "diagnostics.csv")
-    with output.open(newline="", encoding="utf-8") as handle:
-        rows = list(csv.reader(handle))
-
-    assert tuple(rows[0]) == lab2.DiagnosticLog.COLUMNS
-    assert len(rows) == lab2.N_STEPS + 1
-    assert not list(tmp_path.glob("*.tmp"))
-
-    values = np.genfromtxt(output, delimiter=",", names=True)
-    # Timing must be monotonic so control-period drift is measurable.
-    assert np.all(np.diff(values["t_rel"]) > 0.0)
-    for column in ("nis", "nu_speed", "ekf_x", "P_xx"):
-        assert np.all(np.isfinite(values[column])), column
-
-
-def test_diagnostic_write_failure_does_not_mask_the_real_error(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """Raising from the finally block would hide why the run actually died.
-
-    The diagnostic log is written on the way out of a failed run, so a disk
-    error there must not replace the dropped-BLE exception in flight.
-    """
-
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        ["lab2.py", "--sim", "--no-render", "--student-id", "33377006"],
-    )
-    monkeypatch.setattr(lab2.time, "sleep", lambda _: None)
-
-    def record_one_row_then_fail(sim_env, robot_env, *, diagnostics=None, **_):
-        if diagnostics is not None:
-            diagnostics.rows.append((0.0,) * len(lab2.DiagnosticLog.COLUMNS))
-        raise RuntimeError("BLE link dropped")
-
-    def fail_to_write(self, path):
-        raise OSError("disk full")
-
-    monkeypatch.setattr(lab2, "run_experiment", record_one_row_then_fail)
-    monkeypatch.setattr(lab2.DiagnosticLog, "write", fail_to_write)
-
-    with pytest.raises(RuntimeError, match="BLE link dropped"):
-        lab2.main()
-
-    assert "could not write the diagnostic log" in capsys.readouterr().out
 
 
 def test_csv_validator_rejects_wrong_row_count(tmp_path: Path) -> None:

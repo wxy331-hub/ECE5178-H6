@@ -11,43 +11,20 @@ from __future__ import annotations
 import numpy as np
 
 
-# The equations come from the calibrated Lab 1 model; the parameters are
-# re-estimated from hardware, which instructions.md asks for separately.
-#
-# speed_gain and the deadband are solved together from two working points
-# measured on 2026-08-21, because they are the slope and the x-intercept of
-# one line and a single point cannot separate them:
-#
-#     raw 7  -> 0.0318 m/s      raw 10 -> 0.0905 m/s
-#     gain = 1.957   deadband = 0.0537   (both points fit exactly)
-#
-# Lab 1's 2.69 came from differentiating a locator track that included
-# stalled steps, so it read the average of a stop-start motion as a steady
-# speed. Replaying the 200-step log offline, this pair cuts the trajectory
-# RMSE from 0.239 m to 0.162 m.
-#
-# dt is 0.105, not Lab 1's 0.1: with ThrottledRobot the control period
-# measured 104.9 ms, and the prediction is only right if dt is the interval
-# that actually elapsed.
+# The equations and all response limits come from the calibrated Lab 1 model.
+# Lab 2 uses a slightly lower speed gain: the 2026-08-14 hardware runs produced
+# roughly 0.76--0.82 m EKF legs while the simulator produced 0.872--0.875 m
+# legs with the Lab 1 gain of 2.69.  A conservative first correction to 2.47
+# reduces that systematic size mismatch without adding a calibration phase.
 MODEL_CONFIG = {
-    "dt": 0.105,
+    "dt": 0.1,
     "max_speed_m_s": 0.50,
-    "speed_gain": 1.957,
+    "speed_gain": 2.47,
     "speed_time_constant_s": 0.216,
     "max_acceleration_m_s2": 1.79,
     "max_deceleration_m_s2": 1.33,
-    # 7.5 rad/s, not Lab 1's 2.61.  The gyroscope on 2026-08-21 read 511 deg/s
-    # at the peak of each turn and the robot cleared 90 degrees in two steps;
-    # integrating the trace gives 87.6 degrees over those two steps, so the
-    # rate that reproduces the timing is 7.5.  At 2.61 the model needed six
-    # steps for a turn the robot finished in two, which left the measured
-    # heading permanently ahead of the prediction -- the +6.7 degree bias in
-    # the heading innovation, previously mistaken for yaw wander.
-    "max_turn_rate_rad_s": 7.5,
-    # Solved jointly with speed_gain above.  Lab 1's 0.0322 also disagrees
-    # with its own run, which stalled 0.0633 m short while the controller was
-    # still commanding 0.80 x 0.0633 = 0.0506 m/s.
-    "command_deadband_m_s": 0.0537,
+    "max_turn_rate_rad_s": 2.61,
+    "command_deadband_m_s": 0.0322,
 }
 
 
@@ -95,7 +72,9 @@ def _dynamics_float64(state: np.ndarray, action: np.ndarray) -> np.ndarray:
         if accelerating
         else MODEL_CONFIG["max_deceleration_m_s2"]
     )
-    speed_new = _move_towards(float(speed), first_order_target, rate_limit * dt)
+    speed_new = _move_towards(
+        float(speed), first_order_target, rate_limit * dt
+    )
     speed_new = float(np.clip(speed_new, -max_speed, max_speed))
 
     heading_mid = wrap_angle(float(heading) + 0.5 * heading_step)
@@ -103,7 +82,9 @@ def _dynamics_float64(state: np.ndarray, action: np.ndarray) -> np.ndarray:
     x_new = float(x) + speed_mid * np.sin(heading_mid) * dt
     y_new = float(y) + speed_mid * np.cos(heading_mid) * dt
 
-    return np.array([x_new, y_new, heading_new, speed_new], dtype=np.float64)
+    return np.array(
+        [x_new, y_new, heading_new, speed_new], dtype=np.float64
+    )
 
 
 def dynamics(state: np.ndarray, action: np.ndarray) -> np.ndarray:
@@ -130,7 +111,7 @@ class EKF:
 
     def __init__(
         self,
-        dt: float = MODEL_CONFIG["dt"],
+        dt: float = 0.1,
         initial_state: np.ndarray | None = None,
         initial_covariance: np.ndarray | None = None,
         process_noise: np.ndarray | None = None,
@@ -157,14 +138,11 @@ class EKF:
             "initial_covariance",
         )
 
-        # Safe initial values, not final calibration results.  Q's position
-        # entry is the smallest value that passed both consistency limits
-        # across a 100-seed simulation sweep.  R's speed entry is still the
-        # simulator's obs_noise_std_vel of 0.025 m/s, which no longer
-        # describes the source: hardware speed now comes from the wheel
-        # encoders, whose noise has never been measured on this robot.  It is
-        # left unchanged rather than guessed -- logs/lab2_diagnostics.csv
-        # records the innovations needed to estimate it from one run.
+        # These are safe initial values, not final calibration results.  Q and
+        # R will be tuned from repeated simulation and real sensor logs.
+        # Position noise was selected with a 100-seed simulation sweep.  The
+        # smallest tested value that passed both published consistency limits
+        # for every run was 1.25 * 2.5e-6 = 3.125e-6 m^2 per step.
         default_q = np.diag([3.125e-6, 3.125e-6, 1.0e-4, 2.5e-5])
         default_r = np.diag([6.25e-4, 6.25e-4])
         self.Q = self._validate_covariance(
@@ -301,7 +279,9 @@ class EKF:
 
         innovation_covariance = self.H @ self.P @ self.H.T + self.R
         p_h_transpose = self.P @ self.H.T
-        kalman_gain = np.linalg.solve(innovation_covariance, p_h_transpose.T).T
+        kalman_gain = np.linalg.solve(
+            innovation_covariance, p_h_transpose.T
+        ).T
 
         self.state_est = self.state_est + kalman_gain @ innovation
         self.state_est[2] = wrap_angle(self.state_est[2])
