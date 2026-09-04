@@ -9,7 +9,7 @@ Each lab has two components:
 1. **Automarked individual assessment**
 2. **Team demo on a real robot**
 
-Your mark is a combination of both components.
+Your mark is a combination of both components. Team demo is scaled by interview and the final project demo will be scaled by both interview and ITP
 
 The final project is submitted in teams and also consists of both a simulated demo and a real robot demo. Time on the real robots is intentionally limited — the goal is for you to conquer the **sim-to-real gap**.
 
@@ -156,6 +156,19 @@ For the final demo, you will program your robot to race another robot in an unkn
 You may consider training a reinforcement learning approach, or chaining together planning, mapping, and control modules.
 
 [Click here for final demo instructions.](./project/Project.md)
+
+## Viva Marking Criteria
+---------------------
+Each of the labs and the final demo will have a viva component. The categories and descriptions can be found below:
+
+| Category Description     | Detailed Description                                                                                                                                                  |
+|--------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Complete Understanding   | The student is clearly prepared and can answer questions concisely and correctly with little to no prompting about the parts they personally worked on. They also show a reasonable understanding of the rest of the codebase and how it connects to their contribution. |
+| Tolerable Understanding  | The student has prepared and can answer mostly correct responses about their own work, though some clarification or prompting may be needed. They demonstrate limited understanding of the other parts of the code. |
+| Selective Understanding  | The student can answer questions about some parts of their own work, but is clearly unprepared for other areas, either within their contribution or the broader system. Their preparation is insufficient or incomplete. |
+| Trivial Understanding    | The student demonstrates only vague or superficial knowledge of their contribution, and is unable to engage with questions meaningfully. There is little or no awareness of the rest of the team's code. |
+| No Understanding         | The student appears completely unprepared, shows no knowledge of the code, and cannot answer basic questions, even with assistance. May indicate they have not reviewed the work at all. |
+| Absent                   | The student did not attend the viva interview for the project.                                                                                                         |
 
 ---
 # Installation
