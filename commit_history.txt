@@ -1,3 +1,28 @@
+commit 484918f0db669838a643a78c98ef6a08328e6c20
+Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
+Date:   Fri Sep 11 12:48:48 2026 +1000
+
+    Update Lab 3 navigation and corner waiting
+
+commit a3c835e17e90393f93c747494619bdbd56e99e63
+Merge: 2febea0 e3690c4
+Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
+Date:   Fri Sep 4 11:08:17 2026 +1000
+
+    Merge upstream lab 3 map tools
+
+commit 2febea0648605146e953eae474f07f15c1b95a48
+Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
+Date:   Thu Sep 3 20:40:45 2026 +1000
+
+    Rewrite the Lab 2 code explanation for the current implementation
+
+commit 8001861df469dc787e129c62eb2735cc7f566986
+Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
+Date:   Thu Sep 3 17:05:16 2026 +1000
+
+    Update commit history
+
 commit 939f4142f54010485497ae73c38f4c6a654bc648
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
 Date:   Thu Sep 3 16:56:25 2026 +1000
@@ -156,6 +181,41 @@ Date:   Thu Sep 3 17:03:51 2026 +1000
 
     Import Lab 2 working copy
 
+commit e3690c41b855ecd437b438de42271c9e104ce6e0
+Author: AaronMonash <110008453+AaronMonash@users.noreply.github.com>
+Date:   Thu Sep 3 08:38:16 2026 +1000
+
+    Revise project description and add details link
+    
+    Updated project description and added link to final project details.
+
+commit b30fcf28c6dd736b225291804990014a67b00520
+Author: Michael Burke <mgb45@users.noreply.github.com>
+Date:   Fri Aug 28 21:56:57 2026 +1000
+
+    Update instructions.md
+
+commit cbfa1ae577977ebc66c926613f3fcf9147a80483
+Author: Michael <michael@monash>
+Date:   Fri Aug 28 21:51:35 2026 +1000
+
+    Added map information for lab 3 and 4
+
+commit dd79b3c5ea261c2f1f507b16f049ef2ec427c5b7
+Merge: bbf476b 761173d
+Author: Michael Burke <mgb45@users.noreply.github.com>
+Date:   Fri Aug 28 20:54:33 2026 +1000
+
+    Merge pull request #6 from mishekkumar/meshach
+    
+    Add custom maze python file
+
+commit 761173dd7591c4502b6a8f89fd8bcdba517bcac2
+Author: Meshach Kumar <meshachkumar19@gmail.com>
+Date:   Fri Aug 28 16:35:23 2026 +1000
+
+    Add custom maze python file
+
 commit 81d4983eddc07930dc852bcfe0e11ce5ee99ebf3
 Merge: c11f90c b71d7fd
 Author: wxy331-hub <wwww135711@gmail.com>
@@ -170,6 +230,22 @@ Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
 Date:   Fri Aug 14 12:15:31 2026 +1000
 
     Implement and calibrate Lab 2 EKF
+
+commit bbf476b38647d4f053c14fc0db393ca87b3a05e8
+Author: AaronMonash <110008453+AaronMonash@users.noreply.github.com>
+Date:   Tue Aug 11 09:13:52 2026 +1000
+
+    Add viva marking criteria to README
+    
+    Added a section detailing the viva marking criteria for labs and final demo, including categories and descriptions.
+
+commit 60e0d7d9b85237f76ab3718a3050565e90cd23ad
+Author: AaronMonash <110008453+AaronMonash@users.noreply.github.com>
+Date:   Tue Aug 11 08:55:14 2026 +1000
+
+    Update grading explanation in README
+    
+    Clarified grading criteria for team demo and final project.
 
 commit c11f90ca1849193ce84de295e526fb7ed3d5d748
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
