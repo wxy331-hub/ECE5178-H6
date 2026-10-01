@@ -1,134 +1,173 @@
+"""Lab 4: drive the maze with the learned policy.
+
+    .venv/Scripts/python.exe labs/lab4/lab4.py --sim        # simulation only
+    .venv/Scripts/python.exe labs/lab4/lab4.py              # the robot, beside the simulator
+    .venv/Scripts/python.exe labs/lab4/lab4.py --teacher    # the teacher drives instead, to collect data
+
+Train first with train.py, which writes weight.pth beside this file.  The
+network decides every action; the safety layer in runtime.py can only slow or
+stop it, and the run prints how often it did.
+"""
+
 # Import necessary libraries
-from sphero_env.robot.connect import scan_and_connect
-from sphero_unsw.sphero_edu import SpheroEduAPI
-from sphero_env.robot.robot import Robot
-from sphero_env.envs import SpheroEnv
-
 import argparse
-import numpy as np
-from Policy import *
-
-
+import csv
+import time
 from contextlib import ExitStack, contextmanager
+from pathlib import Path
 
-LAB1_SEED = 0
-MAX_STEPS = 500
+import numpy as np
+import torch
 
-### Custom dynamics function for the Sphero robot - replace this with the one you developed in Lab 1
-def wrap_angle(angle):
-    return (angle + np.pi) % (2.0 * np.pi) - np.pi  # Normalize to [-pi, pi)
+import runtime as R
+from expert import expert_policy
+from lab2 import ExperimentAborted, connect_with_retry, stop_motion
+from Policy import Policy
+from sphero_env.robot.connect import scan_and_connect
 
-def dynamics(state, action):
-        """
-        Compute the next state given current state and action using the base dynamics without noise.
-        This can be rewritten to improve the model.
-        """
-        x, y, heading, speed = state
-        speed_cmd, turn_rate_cmd = action
-        # Simple unicycle model dynamics
-        heading_new = wrap_angle(heading + turn_rate_cmd * 0.1)
-        speed_new = np.clip(speed + speed_cmd * 0.1, 0, 1.0)
-        x_new = x + speed_new * np.sin(heading_new) * 0.1
-        y_new = y + speed_new * np.cos(heading_new) * 0.1
-        return np.array([x_new, y_new, heading_new, speed_new], dtype=np.float32)
+LAB_DIR = Path(__file__).resolve().parent
+STUDENT_ID = "33377006"
+CSV_COLUMNS = ("sim_x", "sim_y", "real_x", "real_y")
+WEIGHTS = LAB_DIR / "weight.pth"
 
-### If needed, add the EKF from lab 2 here too, and integrate below.
 
-def make_sim_env():
-    return SpheroEnv(
-        dt=0.1,
-        max_steps=5000,
-        vel_limit=0.15,
-        world_width=5.0,
-        world_height=5.0,
-        goal_pos=(0.5, 0.5),
-        goal_tolerance=0.1,
-        occupancy_grid=None,
-        dynamics=dynamics,
-        obs_noise_std_pos=0.05,
-        process_noise_std_speed=0.005,
-        process_noise_std_heading=0.01,
-        obs_noise_std_vel=0.025,
-        render_mode="human",
-        window_size=(800, 800),
-    )
+def load_policy(path=WEIGHTS):
+    """The trained network, loaded the way the submission says it will be."""
+    policy = Policy()
+    policy.load_state_dict(torch.load(path))
+    policy.eval()
+    return policy
 
-def make_real_env(api):
-    return Robot(
-        api=api,
-        dt=0.1,
-        max_steps=5000,
-        vel_limit=0.15,
-        world_width=5.0,
-        world_height=5.0,
-        goal_pos=(0.5, 0.5),
-        goal_tolerance=0.1,
-        render_mode="human",
-        window_size=(800, 800),
-    )
+
+def as_controller(policy):
+    def act(state):
+        with torch.no_grad():
+            return policy(torch.tensor(state, dtype=torch.float32)).numpy().astype(np.float64)
+    return act
+
 
 @contextmanager
-def managed_env(sim: bool):
-    if sim:
-        sim_env = make_sim_env()
-        sim_env.set_log_path("logs/lab4_sim.csv")
-        sim_env.start_logging()
-        try:
-            yield sim_env
-        finally:
-            sim_env.stop_logging()
-            sim_env.close()
-    else:
-        with ExitStack() as stack:
-            selected_toy, _ = scan_and_connect()
-            print(f"Selected: {selected_toy.name}")
+def managed_env(sim: bool, render: bool = True):
+    """Yield ``(sim_env, robot_env)``; ``robot_env`` is None in simulation."""
+    sim_env = R.make_sim_env(render=render)
+    sim_env.set_log_path("logs/lab4_sim.csv")
+    sim_env.start_logging()
+    try:
+        if sim:
+            print("Simulation only: no robot, no Bluetooth.")
+            yield sim_env, None
+        else:
+            print("Hardware mode: scanning for the robot. "
+                  "Pass --sim to run without one, or press Ctrl+C to stop.")
+            with ExitStack() as stack:
+                selected_toy, _ = scan_and_connect()
+                print(f"Selected: {selected_toy.name}")
+                api = connect_with_retry(stack, selected_toy)
+                real_env = R.make_real_env(api)
+                real_env.set_log_path("logs/lab4_real.csv")
+                real_env.start_logging()
+                try:
+                    yield sim_env, real_env
+                finally:
+                    real_env.close()
+                    real_env.stop_logging()
+    finally:
+        sim_env.stop_logging()
+        sim_env.close()
 
-            api = stack.enter_context(SpheroEduAPI(selected_toy))
-            real_env = make_real_env(api)
-            real_env.set_log_path("logs/lab4_real.csv")
 
-            real_env.start_logging()
-            try:
-                yield real_env
-            finally:
-                real_env.close()
-                real_env.stop_logging()
+def write_submission(records, student_id=STUDENT_ID):
+    """The automarker CSV: simulator truth against the filter's estimate.
 
-def control_loop(control_env):
+    instructions.md names the file studentid_lab3.csv, which reads as a slip
+    for lab4; confirm with the course before submitting.
+    """
+    path = LAB_DIR / f"{student_id}_lab4.csv"
+    with open(path, "w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(CSV_COLUMNS)
+        for row in records:
+            writer.writerow(f"{value:.6f}" for value in row)
+    return path
 
-    obs, _ = control_env.reset(seed=LAB1_SEED)
-    rng = np.random.default_rng(LAB1_SEED)
 
-    # Initialize the policy - make sure dims align, you may want to preprocess observations
-    policy = Policy(d_in=5, hidden=64, d_out=2)
+def write_step_log(rows):
+    """Every hardware step as state -> action -> next state, for training later.
 
-    ## Load pre-trained weights if available
-    # policy.load_state_dict(torch.load("path_to_pretrained_model.pth"))
+    obs_* is the estimate the action was chosen from, next_* the estimate
+    after it.  policy_* is whatever drove the run -- the network, or the
+    teacher under --teacher -- and applied_* what the safety layer let through.
+    """
+    path = Path("logs") / f"lab4_steps_{time.strftime('%m%d_%H%M%S')}.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+    return path
 
-    steps = 0
-    while steps < MAX_STEPS:
 
-        action = policy(torch.tensor(obs, dtype=torch.float32)).detach().numpy()
+def print_metrics(records):
+    """Report the four numbers the automarker checks, against the A* optimum."""
+    names = {
+        "final_sim": "final distance to goal (sim)", "final_real": "final distance to goal (real)",
+        "path_sim": "distance to optimal path (sim)", "path_real": "distance to optimal path (real)",
+    }
+    values = R.metrics(records)
+    print(f"{'metric':<32}{'value':>10}{'limit':>10}  result")
+    for key, name in names.items():
+        ok = values[key] <= R.LIMITS[key]
+        print(f"{name:<32}{values[key]:>10.4f}{R.LIMITS[key]:>10.2f}  {'PASS' if ok else 'FAIL'}")
 
-        obs, _, terminated, truncated, info = control_env.step(action)
 
-        if (obs[0]-control_env.goal_pos[0])**2 + (obs[1]-control_env.goal_pos[1])**2 < control_env.goal_tolerance**2:
-            break  # Move to the next waypoint if close enough
-
-        control_env.render()
-
-        steps += 1
-
-    control_env.emergency_stop()
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Lab 4 learned navigation. Without --sim the robot is scanned "
+                    "for over Bluetooth and driven alongside the simulator."
+    )
+    parser.add_argument("--sim", action="store_true", help="simulation only")
+    parser.add_argument("--teacher", action="store_true",
+                        help="drive with the teacher instead of the network, to collect data")
+    parser.add_argument("--weights", type=Path, default=WEIGHTS)
+    parser.add_argument("--no-render", action="store_true", help="disable animation")
+    parser.add_argument("--steps", type=int, default=R.MAX_STEPS, help="safety cap on steps")
+    return parser.parse_args(argv)
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--sim", action="store_true", help="Run simulation")
-    args = parser.parse_args(argv)
+    args = parse_args(argv)
+    render = not args.no_render
+    # Loaded before any Bluetooth scan: a missing or broken weights file should
+    # stop the run before a robot has been placed and paired for nothing.
+    controller = expert_policy if args.teacher else as_controller(load_policy(args.weights))
+    print(f"Driving with the {'teacher' if args.teacher else 'network from ' + str(args.weights)}.")
+    records, steps = [], []
+    hardware = False
 
-    with managed_env(args.sim) as control_env:
-        control_loop(control_env)
+    try:
+        with managed_env(args.sim, render=render) as (sim_env, robot_env):
+            hardware = robot_env is not None
+            try:
+                R.run_episode(controller, sim_env, robot_env, max_steps=args.steps,
+                              render=render, records=records,
+                              step_log=steps if hardware else None, verbose=True)
+            finally:
+                stop_motion(sim_env, robot_env)
+    except ExperimentAborted as error:
+        print(f"Run aborted: {error}")
+    finally:
+        try:
+            if records:
+                path = write_submission(records)
+                print(f"Wrote {len(records)} rows to {path}")
+                print_metrics(records)
+        finally:
+            if hardware and steps:
+                try:
+                    print(f"Wrote {len(steps)} steps to {write_step_log(steps)}")
+                except OSError as error:
+                    print(f"Could not write the step log: {error}")
+
 
 if __name__ == "__main__":
     main()
