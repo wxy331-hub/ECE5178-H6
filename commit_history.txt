@@ -1,3 +1,41 @@
+commit f1c99151a55567d13260963f24bbe272247ef28b
+Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
+Date:   Thu Oct 1 18:26:42 2026 +1000
+
+    Add Lab 4 behaviour-cloning policy
+    
+    - Teacher: the Lab 3 planner and controller, made stateless so it can label any state.
+    - Dataset: synthetic states along the route, simulated teacher runs, the positions
+      from eight Lab 3 hardware runs (data1-8), and any lab4_steps_*.csv logged on the robot.
+    - train.py: behaviour cloning followed by two DAgger rounds, with a fixed validation set;
+      writes weight.pth.
+    - Safety layer that can only slow or stop the policy, and exits on repeated
+      collisions or lost IMU yaw.
+    - lab4.py runs the policy (or the teacher with --teacher) in simulation or on the robot
+      and writes 33377006_lab4.csv plus a per-step log.
+    
+    Not yet run on the robot.
+
+commit 9cff5c4f5bdcaa7762671d6df54e178b3f53c593
+Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
+Date:   Thu Oct 1 18:26:36 2026 +1000
+
+    Fix Lab 3 corner waiting, wall recovery and turn start
+    
+    - Release the corner wait once the robot has logged this waypoint or any later one.
+    - Stop the robot before setting a new heading, so the SDK does not resend the old speed.
+    - Snap the planner start only to cells connected to the goal; raise when there is no path.
+    - After a replan, skip the new start point only when the robot is beside or past it
+      and inside the first leg's corridor.
+    - Write a per-run hardware diagnostics log under logs/.
+
+commit 84420d4fad9fd286323bc77494aabee8fdb604e3
+Merge: 484918f 87f56fd
+Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
+Date:   Fri Sep 11 12:49:37 2026 +1000
+
+    Sync tested lab versions
+
 commit 484918f0db669838a643a78c98ef6a08328e6c20
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
 Date:   Fri Sep 11 12:48:48 2026 +1000
@@ -10,6 +48,12 @@ Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
 Date:   Fri Sep 4 11:08:17 2026 +1000
 
     Merge upstream lab 3 map tools
+
+commit 87f56fd5392ebdd080eb4bf2b23417637f33614e
+Author: wxy331-hub <croj0004@student.monash.edu>
+Date:   Fri Sep 4 10:54:11 2026 +1000
+
+    Restore Lab 2 0.48 m square implementation
 
 commit 2febea0648605146e953eae474f07f15c1b95a48
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
