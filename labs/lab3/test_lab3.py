@@ -153,6 +153,24 @@ def test_plan_recovers_from_an_estimate_inside_a_wall(planner, occupancy):
         assert not environment_occupied(occupancy, point)
 
 
+def test_plan_never_snaps_into_the_walled_in_plate(planner, occupancy):
+    """Plate (0, 1) has a wall on every side, and it is the first free cell
+    north of the wall above the first corner, (0, 2).
+
+    An estimate that overran that corner used to snap into it, leave A* with
+    no route, and get [goal] back: a straight line to the goal through every
+    wall in between.
+    """
+    overrun = np.array([-0.5, 0.125])
+    assert environment_occupied(occupancy, overrun)
+    waypoints = planner.plan(np.array([*overrun, 0.0, 0.0]), GOAL)
+    assert np.allclose(waypoints[0], [-0.5, 0.0])
+    assert np.allclose(waypoints[-1], GOAL)
+    for a, b in zip(waypoints, waypoints[1:]):
+        for t in np.linspace(0.0, 1.0, 41):
+            assert not environment_occupied(occupancy, a + (b - a) * t)
+
+
 def test_is_clear_matches_the_environment(planner, occupancy):
     for position in ((-0.5, -0.5), (0.5, 0.5), (-0.375, -0.375), (0.0, 0.0)):
         point = np.array(position)
@@ -295,7 +313,7 @@ def test_submission_csv_has_the_required_shape(run, tmp_path, monkeypatch):
 # through a mock shaped like Robot.step()'s return.  They check the wiring --
 # which sensor feeds which term, what triggers a replan -- not the physics.
 
-from unittest.mock import Mock  # noqa: E402
+from unittest.mock import Mock, call  # noqa: E402
 
 import Estimator as Estimator_module  # noqa: E402
 import lab2  # noqa: E402
@@ -331,7 +349,7 @@ def _hardware_info(yaw=0.0, speed_cm_s=0.0, speed_cmd=0.0, odom=None):
     }
 
 
-def _fake_robot(collide_at=(), stall_from=None, speed_scale=1.0):
+def _fake_robot(collide_at=(), stall_from=None, speed_scale=1.0, locator_offset=None):
     """A robot whose IMU, encoder and locator all agree with the command.
 
     observation[2] stays at zero throughout, the way api.get_heading()'s echo
@@ -346,6 +364,10 @@ def _fake_robot(collide_at=(), stall_from=None, speed_scale=1.0):
     ``speed_scale`` makes the robot faster or slower than the model, so it
     reaches each corner at a different step from the simulator -- the
     situation the 12:29 hardware run was in.
+
+    ``locator_offset`` maps the robot's world position to an error its
+    locator adds there, for the tests that need the estimate held somewhere
+    the robot is not.
     """
     robot = Mock()
     state = {"step": 0, "xy": np.zeros(2)}
@@ -371,11 +393,14 @@ def _fake_robot(collide_at=(), stall_from=None, speed_scale=1.0):
         observation = np.array(
             [0.0, 0.0, 0.0, 0.0, 1.0 if collided else 0.0], dtype=np.float32
         )
+        reported = state["xy"]
+        if locator_offset is not None:
+            reported = reported + locator_offset(reported + np.asarray(START_POSITION))
         info = _hardware_info(
             yaw=_honest_yaw(heading),
             speed_cm_s=100.0 * speed if moving else 0.0,
             speed_cmd=speed_cmd,
-            odom=[state["xy"][0], state["xy"][1], heading, speed if moving else 0.0],
+            odom=[reported[0], reported[1], heading, speed if moving else 0.0],
         )
         state["step"] += 1
         return observation, 0.0, False, False, info
@@ -405,6 +430,30 @@ def test_hardware_uses_the_throttled_robot():
     # vel_limit doubles as the raw-speed scale on hardware.
     assert environment.vel_limit == lab3.COMMAND_SPEED_LIMIT
     assert environment.raw_speed_limit == lab3.RAW_SPEED_LIMIT
+
+
+def test_hardware_stops_before_it_turns_on_the_spot():
+    """The SDK's set_heading() rolls at whatever speed it last sent.
+
+    In ThrottledRobot's order -- heading, then speed -- a stop-and-turn would
+    send the robot off in the new direction at cruise speed until the stop
+    arrived one BLE round trip later.
+    """
+    api = Mock()
+    environment = lab3.make_real_env(api)
+    environment._last_heading_deg = 0
+
+    api.reset_mock()
+    environment.set_heading_and_speed(90, 0)
+    assert api.method_calls == [call.set_speed(0), call.set_heading(90)]
+
+    # Driving, and holding a heading, go out exactly as ThrottledRobot sends them.
+    api.reset_mock()
+    environment.set_heading_and_speed(45, 15)
+    assert api.method_calls == [call.set_heading(45), call.set_speed(15)]
+    api.reset_mock()
+    environment.set_heading_and_speed(45, 0)
+    assert api.method_calls == [call.set_speed(0)]
 
 
 def test_hardware_run_reaches_the_goal(monkeypatch):
@@ -795,3 +844,245 @@ def test_corner_wait_remembers_robot_arrival_after_replanning(planner):
     sim.advance(np.array([-0.5, 0.01, 0.0, 0.0]), False)
     assert sim.target == 3
     assert sim.action(corner)[1] == pytest.approx(np.pi / 2)
+
+
+def _robot_before_the_first_corner(planner):
+    """A robot and a simulator waiting for it at the first corner, (-0.5, 0)."""
+    start = np.array([*START_POSITION, 0.0, 0.0])
+    robot = lab3.WaypointFollower(planner, Controller(), GOAL, start)
+    sim = lab3.WaypointFollower(planner, Controller(), GOAL, start, wait_for=robot)
+    straight = np.array([-0.5, -0.25, 0.0, 0.0])
+    corner = np.array([-0.5, 0.0, 0.0, 0.0])
+    for state in (start, straight, corner):
+        sim.advance(state, False)
+    assert sim.target == 2 and sim.waiting_heading is not None
+    robot.advance(start, False)
+    robot.advance(straight, False)
+    return robot, sim, corner
+
+
+def test_corner_wait_releases_when_the_robot_replans_past_the_corner(planner):
+    """A replan from beyond a corner starts the robot's path after it.
+
+    The robot then never records that corner, only the next one, which lies on
+    the simulator's path as well.  Waiting for the corner itself would hold
+    the simulator there for the rest of the run.
+    """
+    robot, sim, corner = _robot_before_the_first_corner(planner)
+
+    robot.advance(np.array([-0.4, 0.0, np.pi / 2, 0.0]), True)
+    assert robot.replans == 1
+    assert tuple(sim.waypoints[2]) not in robot.reached_waypoints
+    sim.advance(corner, False)
+    # Replanning alone is no evidence the robot got anywhere: the new path
+    # starts at (-0.375, 0), off the simulator's path, and the robot has not
+    # yet reached anything on it.
+    assert sim.target == 2 and sim.waiting_heading is not None
+
+    robot.advance(np.array([-0.25, 0.0, np.pi / 2, 0.0]), False)
+    sim.advance(corner, False)
+    assert sim.target == 3
+    assert sim.waiting_heading is None
+
+
+def test_corner_wait_releases_when_the_robot_finishes_without_the_corner(planner):
+    robot, sim, corner = _robot_before_the_first_corner(planner)
+
+    near_goal = np.array([GOAL[0] - 0.04, GOAL[1], np.pi / 2, 0.0])
+    robot.advance(near_goal, True)
+    robot.advance(np.array([*GOAL, np.pi / 2, 0.0]), False)
+    assert robot.arrived
+    sim.advance(corner, False)
+    assert sim.target == 3
+
+
+@pytest.mark.parametrize("speed_scale", [0.7, 1.0, 1.3])
+def test_corner_wait_is_unchanged_on_an_ordinary_run(monkeypatch, speed_scale):
+    """With no replans the robot records waypoints in path order.
+
+    It cannot have reached a later waypoint without this one, so the wider
+    release condition must decide every step exactly as the plain membership
+    test did, down to the last bit of the submission.
+    """
+    records = _run_hardware(
+        monkeypatch, _fake_robot(speed_scale=speed_scale), max_steps=1500
+    )
+    monkeypatch.setattr(
+        lab3.WaypointFollower,
+        "_peer_reached_here_or_later",
+        lambda self: tuple(self.waypoints[self.target]) in self.wait_for.reached_waypoints,
+    )
+    legacy = _run_hardware(
+        monkeypatch, _fake_robot(speed_scale=speed_scale), max_steps=1500
+    )
+    assert records.shape == legacy.shape
+    assert np.array_equal(records, legacy)
+
+
+# ---------------- resuming after a replan ----------------
+
+
+def test_a_replan_beside_its_start_drives_on_rather_than_back(planner):
+    """The 2026-09-18 loop at plate (3, 0), one step of it.
+
+    The estimate has dipped into the band the grid gives the wall below that
+    plate, so the replan starts on the plate centre 6 cm north of the robot.
+    Driving back to that centre first means stopping to turn 90 degrees away
+    from the way the robot was going.
+    """
+    heading_east = np.pi / 2
+    state = np.array([0.25, 0.4365, heading_east, 0.0])
+    follower = lab3.WaypointFollower(planner, Controller(), GOAL, state)
+    follower.advance(state, False)
+
+    assert follower.replans == 1
+    np.testing.assert_allclose(follower.waypoints[follower.target], GOAL)
+    speed, heading = follower.action(state)
+    assert speed > 0.0
+    assert abs(wrap_angle(heading - heading_east)) < np.deg2rad(15.0)
+
+
+def test_a_replan_outside_the_first_legs_corridor_drives_to_its_start(planner):
+    """Being level with the start is not enough to skip it.
+
+    From (-0.17, 0.33) -- plate (1, 1), 8 cm east of the leg north -- the
+    replan starts at (-0.125, 0.5), and the straight run to its second
+    waypoint would cross the wall between plates (1, 1) and (2, 1) at
+    x = -0.125.  The start itself is reached without crossing it.
+    """
+    state = np.array([-0.17, 0.33, 0.0, 0.0])
+    follower = lab3.WaypointFollower(planner, Controller(), GOAL, state)
+    follower.advance(state, False)
+
+    assert follower.replans == 1
+    assert follower.target == 0
+    np.testing.assert_allclose(follower.waypoints[0], [-0.125, 0.5])
+
+
+def test_a_replan_still_drives_to_a_start_that_lies_ahead(planner):
+    """Skipping the start is for a start beside or behind the robot only."""
+    heading_north = 0.0
+    state = np.array([-0.5, -0.43, heading_north, 0.0])
+    follower = lab3.WaypointFollower(planner, Controller(), GOAL, state)
+    follower.advance(state, True)
+
+    assert follower.replans == 1
+    assert follower.target == 0
+    assert follower.waypoints[0][1] > state[1] + lab3.WAYPOINT_TOLERANCE
+    _, heading = follower.action(state)
+    assert abs(wrap_angle(heading - heading_north)) < 1e-9
+
+
+def test_a_locator_offset_into_a_wall_band_does_not_trap_the_robot(monkeypatch, planner):
+    """A locator reading 12 cm east of the robot along the first leg.
+
+    That holds the estimate in the band the grid gives the wall east of the
+    corridor.  Returning to each replan's start drove the robot back and forth
+    there for the rest of the run; it has to get through and finish.
+
+    The mock has no walls, so this checks the loop is gone and the marked
+    tracks stay in bounds, not that the real robot would clear every wall.
+    """
+    def offset(world):
+        return np.array([0.12, 0.0]) if -0.24 <= world[1] < 0.12 else np.zeros(2)
+
+    run = _run_hardware(
+        monkeypatch, _fake_robot(speed_scale=0.81, locator_offset=offset), max_steps=1000
+    )
+    optimal = np.asarray(
+        planner.plan(np.array([*START_POSITION, 0.0, 0.0]), GOAL), dtype=np.float64
+    )
+    assert np.linalg.norm(run[-1, 2:4] - GOAL) <= FINAL_DISTANCE_LIMIT
+    assert np.linalg.norm(run[-1, 0:2] - GOAL) <= FINAL_DISTANCE_LIMIT
+    assert deviation_from(run[:, 2:4], optimal) <= PATH_DEVIATION_LIMIT
+    assert deviation_from(run[:, 0:2], optimal) <= PATH_DEVIATION_LIMIT
+
+
+# ---------------- diagnostic log ----------------
+
+
+def test_diagnostics_leave_the_run_unchanged(monkeypatch):
+    """The log only copies what the loop computed; switching it on changes nothing."""
+    plain = _run_hardware(monkeypatch, _fake_robot(collide_at=(40,)), max_steps=600)
+
+    log = lab3.DiagnosticLog()
+    env = lab3.make_sim_env(render=False)
+    try:
+        logged = np.asarray(
+            lab3.control_loop(
+                env, _fake_robot(collide_at=(40,)), max_steps=600,
+                render=False, verbose=False, diagnostics=log,
+            ),
+            dtype=np.float64,
+        )
+    finally:
+        env.close()
+
+    assert np.array_equal(plain, logged)
+    assert len(log.rows) == len(logged)
+    column = {name: index for index, name in enumerate(lab3.DiagnosticLog.COLUMNS)}
+    rows = np.asarray(log.rows, dtype=np.float64)
+    assert rows.shape[1] == len(lab3.DiagnosticLog.COLUMNS)
+    # The collision the mock raised at step 40, and the replan it caused.
+    assert rows[40, column["collision"]] == 1.0
+    assert rows[40, column["replans"]] == rows[39, column["replans"]] + 1
+    for name in ("imu_yaw_deg", "encoder_speed", "imu_pitch_deg", "imu_roll_deg",
+                 "vel_x_cm_s", "vel_y_cm_s"):
+        assert np.isfinite(rows[:, column[name]]).all(), name
+
+
+def _main_on_mock_hardware(monkeypatch, tmp_path):
+    """Point main() at a mock robot that the operator aborts after five steps."""
+    from contextlib import contextmanager
+
+    monkeypatch.setattr(lab3, "LAB_DIR", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(lab3.time, "sleep", lambda _: None)
+
+    @contextmanager
+    def mock_hardware(sim, render=True):
+        env = lab3.make_sim_env(render=False)
+        try:
+            yield env, _fake_robot()
+        finally:
+            env.close()
+
+    monkeypatch.setattr(lab3, "managed_env", mock_hardware)
+    seen = {"n": 0}
+
+    def abort_after_five():
+        seen["n"] += 1
+        if seen["n"] > 5:
+            raise lab3.ExperimentAborted("test")
+
+    monkeypatch.setattr(lab3, "_poll_for_abort", abort_after_five)
+
+
+def _diagnostic_rows(tmp_path):
+    logs = sorted((tmp_path / "logs").glob("lab3_diagnostics_*.csv"))
+    assert len(logs) == 1
+    with open(logs[0], newline="", encoding="utf-8") as handle:
+        return list(csv.reader(handle))
+
+
+def test_main_writes_the_diagnostics_after_a_hardware_abort(monkeypatch, tmp_path, capsys):
+    _main_on_mock_hardware(monkeypatch, tmp_path)
+    lab3.main([])
+
+    assert "Run aborted" in capsys.readouterr().out
+    rows = _diagnostic_rows(tmp_path)
+    assert tuple(rows[0]) == lab3.DiagnosticLog.COLUMNS
+    assert len(rows) == 6  # header plus five steps
+
+
+def test_diagnostics_are_written_even_when_the_submission_is_not(monkeypatch, tmp_path):
+    """A submission CSV held open in Excel cannot be replaced; the log still can."""
+    _main_on_mock_hardware(monkeypatch, tmp_path)
+
+    def locked(records, student_id=lab3.STUDENT_ID):
+        raise PermissionError("the CSV is open in Excel")
+
+    monkeypatch.setattr(lab3, "write_submission", locked)
+    with pytest.raises(PermissionError):
+        lab3.main([])
+    assert len(_diagnostic_rows(tmp_path)) == 6

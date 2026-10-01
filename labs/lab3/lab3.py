@@ -71,8 +71,8 @@ WAYPOINT_TOLERANCE = 0.05
 # limit with nothing left for hardware error.
 ARRIVAL_TOLERANCE = 0.03
 
-# A command value, not a ground speed: the model subtracts a 0.0537 m/s
-# deadband and applies a gain of 1.957, so 0.12 asks for about 0.13 m/s.
+# A 0.15 command maps to raw 15. The calibrated model predicts a steady
+# speed of 1.957 * (0.15 - 0.0537) ~= 0.19 m/s at that command.
 CRUISE_SPEED = 0.15
 
 # Below this the encoder is reporting a robot that is not moving, whatever it
@@ -134,6 +134,55 @@ class WaypointFollower:
         self.reached_waypoints = set()
         self.waiting_heading = None
 
+    def _resume_target(self, position):
+        """Which waypoint of a fresh plan to drive at first.
+
+        The plan starts on the cell the estimate snapped to.  When the estimate
+        has strayed into the band the occupancy grid gives a wall, that cell
+        centre is beside the robot, not ahead of it, and driving back to it
+        turns the robot away from the way it was going.  Beside a wall that is
+        a loop -- the 2026-09-18 run went round it for about 3 s on plate
+        (3, 0): turn to the centre, turn back, drift into the band, replan,
+        turn to the centre.
+
+        So the start is skipped when the robot is level with it or past it
+        along the first leg, and only while the robot is inside that leg's
+        corridor.  The walls beside a leg sit one grid cell from its centre
+        line; from further out, the straight run to the second waypoint can
+        cut through a wall the plan went round.
+
+        The corridor is the full cell, not the cell less the ball's radius.
+        From the outer part of it the ball can clip a wall end on the way;
+        but an estimate that far out is as often a locator reading 9-12 cm
+        wide of a robot still on the centre line -- the 2026-09-18 runs saw
+        errors that size -- and sending that one back to the start restores
+        the loop.  A clipped wall end is a bump to recover from; the loop is
+        the end of the run.
+        """
+        if len(self.waypoints) < 2:
+            return 0
+        start = np.asarray(self.waypoints[0], dtype=np.float64)
+        leg = np.asarray(self.waypoints[1], dtype=np.float64) - start
+        direction = leg / np.linalg.norm(leg)
+        offset = np.asarray(position, dtype=np.float64)[:2] - start
+        along = float(offset @ direction)
+        across = abs(float(offset[0] * direction[1] - offset[1] * direction[0]))
+        in_corridor = across < self.planner.grid_resolution
+        return 1 if along > -WAYPOINT_TOLERANCE and in_corridor else 0
+
+    def _peer_reached_here_or_later(self):
+        """True once the other follower has reached this waypoint or a later one.
+
+        A replan restarts the other follower's path wherever it then is, so a
+        robot that replans from beyond this corner never records the corner
+        itself and a plain membership test would hold the simulator here for
+        the rest of the run.  Its arrival at any later waypoint of this path
+        shows it got past the corner anyway.  On an ordinary run it records
+        waypoints in path order, so this answers exactly as that test did.
+        """
+        reached = self.wait_for.reached_waypoints
+        return any(tuple(point) in reached for point in self.waypoints[self.target:])
+
     def action(self, state):
         if self.waiting_heading is not None:
             return np.array([0.0, self.waiting_heading], dtype=np.float64)
@@ -154,7 +203,7 @@ class WaypointFollower:
         # longer in.  Either way the old path is stale.
         if collided or not self.planner.is_clear(position):
             self.waypoints = self.planner.plan(state, self.goal)
-            self.target = 0
+            self.target = self._resume_target(position)
             self.replans += 1
             self.waiting_heading = None
 
@@ -168,7 +217,7 @@ class WaypointFollower:
                 self.waypoints[self.target] - self.waypoints[self.target - 1],
                 self.waypoints[self.target + 1] - self.waypoints[self.target],
             ) <= 0.0
-            if self.wait_for is not None and corner and waypoint not in self.wait_for.reached_waypoints:
+            if self.wait_for is not None and corner and not self._peer_reached_here_or_later():
                 if self.waiting_heading is None:
                     self.waiting_heading = float(state[2])
                 return False
@@ -203,11 +252,38 @@ def make_sim_env(render=True):
     )
 
 
+class Lab3Robot(ThrottledRobot):
+    """ThrottledRobot that stops before it turns on the spot.
+
+    ThrottledRobot writes the heading first and the speed second, which suits
+    a heading that changes while driving.  It does not suit the controller's
+    turn on the spot: the SDK's set_heading() sends the new heading together
+    with the speed it last sent, so a robot told to stop and face a new way
+    first rolls off that way at cruise speed, for one BLE round trip, before
+    the zero speed reaches it.  Next to a wall that is a lurch toward or along
+    the wall every time the controller stops to realign.
+
+    Stopping first is the same two writes in the other order, so it costs no
+    BLE time; every other command goes out exactly as ThrottledRobot sends it.
+    """
+
+    def set_heading_and_speed(self, heading_deg, speed):
+        commanded = int(heading_deg)
+        if int(np.clip(speed, 0, 255)) == 0 and commanded != self._last_heading_deg:
+            # Not through super(): the lock is not re-entrant.
+            with self._lock:
+                self.api.set_speed(0)
+                self.api.set_heading(commanded)
+                self._last_heading_deg = commanded
+            return
+        super().set_heading_and_speed(heading_deg, speed)
+
+
 def make_real_env(api):
     # ThrottledRobot, not Robot: the base class writes heading and speed
     # separately every step, which measured a 209 ms period against the 105 ms
-    # the model is calibrated for.
-    return ThrottledRobot(
+    # the model is calibrated for.  Lab3Robot adds stopping before a turn.
+    return Lab3Robot(
         api=api,
         dt=DT,
         max_steps=MAX_STEPS,
@@ -227,8 +303,8 @@ def managed_env(sim: bool, render: bool = True):
     """Yield ``(sim_env, robot_env)``; ``robot_env`` is None in simulation.
 
     The simulator runs in both modes.  It owns the occupancy grid and the goal,
-    and its ground truth is the sim_x/sim_y the automarker reads, so on
-    hardware it is stepped with the same action as the robot.
+    and its ground truth supplies sim_x/sim_y for the automarker.  In hardware
+    mode, the simulator and robot use their own waypoint followers and actions.
     """
     sim_env = make_sim_env(render=render)
     sim_env.set_log_path("logs/lab3_sim.csv")
@@ -304,6 +380,95 @@ def extract_measurement(observation, info=None, *, heading_sensor=None,
     return z
 
 
+class DiagnosticLog:
+    """Per-step record of what the hardware loop sensed and decided.
+
+    The 2026-09-18 run could not be taken apart afterwards: lab3_real.csv holds
+    the command echoed back as heading and speed, and nothing of the collision
+    flag, the IMU, the encoder or the replans.  This keeps them.  It copies
+    only values the loop has already computed -- no sensor is read and no
+    measurement taken a second time -- so logging cannot change what a run
+    does.  Positions are in the world frame, angles in degrees.
+
+    Each run writes its own file, named for when it started.  The runs worth
+    investigating are the ones that go wrong, and the usual response to one
+    is to run again straight away, which would overwrite a single shared log.
+    """
+
+    COLUMNS = (
+        "step", "t_s", "speed_cmd", "heading_cmd_deg",
+        "collision", "encoder_speed", "imu_yaw_deg", "gyro_z_deg_s",
+        "imu_pitch_deg", "imu_roll_deg", "vel_x_cm_s", "vel_y_cm_s",
+        "locator_x", "locator_y",
+        "z_x", "z_y", "z_heading_deg", "z_speed", "imu_heading_disabled",
+        "est_x", "est_y", "est_heading_deg", "est_speed",
+        "stalled", "clear", "target", "target_x", "target_y", "replans",
+        "sim_target", "sim_waiting",
+    )
+
+    def __init__(self):
+        self.rows = []
+        self._start = time.perf_counter()
+        self.path = Path("logs") / f"lab3_diagnostics_{time.strftime('%m%d_%H%M%S')}.csv"
+
+    @staticmethod
+    def _reading(source, *names):
+        """The first of ``names`` present in a sensor dict, else NaN."""
+        if isinstance(source, dict):
+            for name in names:
+                if name in source:
+                    try:
+                        return float(source[name])
+                    except (TypeError, ValueError):
+                        break
+        return float("nan")
+
+    def record(self, *, step, action, collided, info, encoder_speed, measurement,
+               imu_disabled, estimate, stalled, clear, target, target_xy,
+               replans, sim_target, sim_waiting):
+        nan = float("nan")
+        locator = info.get("state_odom")
+        locator_xy = (
+            (nan, nan) if locator is None
+            else np.asarray(locator, dtype=np.float64)[:2] + np.asarray(START_POSITION)
+        )
+        self.rows.append((
+            float(step), time.perf_counter() - self._start,
+            float(action[0]), float(np.degrees(action[1])),
+            float(collided),
+            nan if encoder_speed is None else float(encoder_speed),
+            self._reading(info.get("orientation"), "yaw"),
+            self._reading(info.get("gyroscope"), "z", "yaw"),
+            # Tilt shows a slope on the top row, and the encoder's own vector
+            # gives a direction of travel that locator packet timing cannot
+            # smear -- the two things a skew along a wall could be.
+            self._reading(info.get("orientation"), "pitch"),
+            self._reading(info.get("orientation"), "roll"),
+            self._reading(info.get("velocity"), "x"),
+            self._reading(info.get("velocity"), "y"),
+            float(locator_xy[0]), float(locator_xy[1]),
+            float(measurement[0]), float(measurement[1]),
+            float(np.degrees(measurement[2])), float(measurement[3]),
+            float(imu_disabled),
+            float(estimate[0]), float(estimate[1]),
+            float(np.degrees(estimate[2])), float(estimate[3]),
+            float(stalled), float(clear),
+            float(target), float(target_xy[0]), float(target_xy[1]),
+            float(replans), float(sim_target), float(sim_waiting),
+        ))
+
+    def write(self, path=None):
+        path = Path(self.path if path is None else path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".csv.tmp")
+        with temporary.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(self.COLUMNS)
+            writer.writerows(self.rows)
+        temporary.replace(path)
+        return path
+
+
 def start_at(control_env, position, heading=0.0):
     """Place the simulator on the maze's start plate.
 
@@ -316,8 +481,11 @@ def start_at(control_env, position, heading=0.0):
 
 
 def control_loop(sim_env, robot_env=None, max_steps=MAX_STEPS, render=True,
-                 verbose=True, records=None):
-    """Drive the maze. ``records`` may be passed in so an aborted run still logs."""
+                 verbose=True, records=None, diagnostics=None):
+    """Drive the maze. ``records`` may be passed in so an aborted run still logs.
+
+    ``diagnostics``, a DiagnosticLog, collects a row per step on hardware.
+    """
     hardware = robot_env is not None
     if records is None:
         records = []
@@ -357,7 +525,8 @@ def control_loop(sim_env, robot_env=None, max_steps=MAX_STEPS, render=True,
     real_loop = WaypointFollower(planner, controller, goal, ekf.state_est)
     # In simulation there is one ball and the filter tracks it, so one loop
     # drives it.  On hardware the simulator is a second ball with a loop of its
-    # own, waiting at corners until the robot has reached the same point.
+    # own, waiting at corners until the robot has reached that corner or a
+    # point beyond it.
     sim_loop = (
         WaypointFollower(planner, controller, goal, sim_env.state_true, wait_for=real_loop)
         if hardware else real_loop
@@ -377,6 +546,10 @@ def control_loop(sim_env, robot_env=None, max_steps=MAX_STEPS, render=True,
             _poll_for_abort()
 
         action = real_loop.action(ekf.state_est)
+        # What that action aimed at, for the diagnostic log: advance() may
+        # replace the waypoints before the row is written.
+        target = real_loop.target
+        target_xy = real_loop.waypoints[target]
 
         if hardware:
             sensor_obs, _, _, _, sensor_info = robot_env.step(action)
@@ -402,15 +575,16 @@ def control_loop(sim_env, robot_env=None, max_steps=MAX_STEPS, render=True,
             sensor_obs = sim_obs
 
         ekf.predict(action)
-        ekf.update(
-            extract_measurement(
-                sensor_obs,
-                sensor_info,
-                heading_sensor=heading_sensor,
-                commanded_heading=float(action[1]),
-                position_offset=START_POSITION,
-            )
+        # Taken once and kept: the IMU heading sensor has state of its own, so
+        # measuring a second time for the log would change the next reading.
+        measurement = extract_measurement(
+            sensor_obs,
+            sensor_info,
+            heading_sensor=heading_sensor,
+            commanded_heading=float(action[1]),
+            position_offset=START_POSITION,
         )
+        ekf.update(measurement)
         sim_env.update_estimate(ekf.state_est, ekf.P)
         if hardware:
             robot_env.update_estimate(ekf.state_est, ekf.P)
@@ -429,6 +603,24 @@ def control_loop(sim_env, robot_env=None, max_steps=MAX_STEPS, render=True,
             sim_loop.advance(sim_info["state_true"], sim_obs[4] > 0.5)
             if hardware else real_done
         )
+        if hardware and diagnostics is not None:
+            diagnostics.record(
+                step=step,
+                action=action,
+                collided=sensor_obs[4] > 0.5,
+                info=sensor_info,
+                encoder_speed=measured_speed,
+                measurement=measurement,
+                imu_disabled=heading_sensor.disabled,
+                estimate=ekf.state_est,
+                stalled=stalled,
+                clear=planner.is_clear(ekf.state_est[:2]),
+                target=target,
+                target_xy=target_xy,
+                replans=real_loop.replans,
+                sim_target=sim_loop.target,
+                sim_waiting=sim_loop.waiting_heading is not None,
+            )
         # The run ends when both balls are at the goal; whichever gets there
         # first waits for the other, so both CSV columns finish on it.
         if real_done and sim_done:
@@ -532,23 +724,37 @@ def main(argv=None):
     # Held out here so an abort or a crash still writes what the run produced;
     # a hardware run costs a Bluetooth pairing and a robot placement to repeat.
     records = []
+    diagnostics = None if args.sim else DiagnosticLog()
 
     try:
         with managed_env(args.sim, render=render) as (sim_env, robot_env):
             try:
                 control_loop(
                     sim_env, robot_env, max_steps=args.steps,
-                    render=render, records=records,
+                    render=render, records=records, diagnostics=diagnostics,
                 )
             finally:
                 stop_motion(sim_env, robot_env)
     except ExperimentAborted as error:
         print(f"Run aborted: {error}")
     finally:
-        if records:
-            path = write_submission(records)
-            print(f"Wrote {len(records)} rows to {path}")
-            print_metrics(records)
+        try:
+            if records:
+                path = write_submission(records)
+                print(f"Wrote {len(records)} rows to {path}")
+                print_metrics(records)
+        finally:
+            # The diagnostic log is the evidence for whatever went wrong, so it
+            # is written even when the submission could not be -- a CSV held
+            # open in Excel, say.  Failing to write it is reported, never
+            # raised over an error already on its way out.
+            if diagnostics is not None and diagnostics.rows:
+                try:
+                    path = diagnostics.write()
+                except OSError as error:
+                    print(f"Could not write the diagnostic log: {error}")
+                else:
+                    print(f"Wrote {len(diagnostics.rows)} diagnostic rows to {path}")
 
 
 if __name__ == "__main__":

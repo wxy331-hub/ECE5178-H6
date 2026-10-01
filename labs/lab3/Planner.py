@@ -71,19 +71,38 @@ class Planner:
         """
         return self._is_free(self.world_to_grid(np.asarray(position, dtype=np.float64)))
 
-    def _nearest_free(self, cell):
+    def _connected(self, cell):
+        """Every free cell reachable from ``cell``."""
+        reached = {cell}
+        queue = deque([cell])
+        while queue:
+            current = queue.popleft()
+            for step in _NEIGHBOURS:
+                candidate = (current[0] + step[0], current[1] + step[1])
+                if candidate not in reached and self._is_free(candidate):
+                    reached.add(candidate)
+                    queue.append(candidate)
+        return reached
+
+    def _nearest_free(self, cell, within=None):
         """Snap a cell onto the maze.
 
         Replanning starts from the estimated pose, and that estimate drifts, so
         the start cell can land inside a wall while the robot is in a corridor.
         Refusing to plan from there would strand the robot.
+
+        ``within`` limits the answer to those cells.  The custom maze walls
+        plate (0, 1) in on every side, and the first free cell north of the
+        wall above (0, 2) is that plate, so an estimate that overruns that
+        corner would otherwise snap somewhere with no route to the goal.
         """
+        accept = self._is_free if within is None else within.__contains__
         height, width = self.map.shape
         cell = (
             int(np.clip(cell[0], 0, height - 1)),
             int(np.clip(cell[1], 0, width - 1)),
         )
-        if self._is_free(cell):
+        if accept(cell):
             return cell
 
         seen = {cell}
@@ -95,7 +114,7 @@ class Planner:
                 if candidate in seen or not self._in_bounds(candidate):
                     continue
                 seen.add(candidate)
-                if self._is_free(candidate):
+                if accept(candidate):
                     return candidate
                 queue.append(candidate)
         raise ValueError("the occupancy grid contains no free cell")
@@ -180,12 +199,18 @@ class Planner:
                         waypoint is a position-only array: [x, y]
         """
         goal = np.asarray(goal, dtype=np.float32)[:2]
-        start_cell = self._nearest_free(self.world_to_grid(np.asarray(state, dtype=np.float64)))
         goal_cell = self._nearest_free(self.world_to_grid(goal.astype(np.float64)))
+        start_cell = self._nearest_free(
+            self.world_to_grid(np.asarray(state, dtype=np.float64)),
+            within=self._connected(goal_cell),
+        )
 
         cells = self._search(start_cell, goal_cell)
         if cells is None:
-            return [goal]
+            # Not reachable: the start was snapped into the goal's own region.
+            # The fallback that used to sit here, [goal], drove the robot
+            # straight at the goal through whatever walls lay between.
+            raise ValueError("no path to the goal from the snapped start")
 
         waypoints = self._resample([self.grid_to_world(cell) for cell in self._corners(cells)])
         # The goal need not sit on a cell centre; finish on the goal itself so
