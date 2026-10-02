@@ -1,3 +1,37 @@
+commit 26e7d6e41020a8d776925304446e6af04f3a22b7
+Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
+Date:   Fri Oct 2 12:57:12 2026 +1000
+
+    Keep the 2026-10-02 Lab 4 hardware runs
+    
+    Step logs are training data for train.py; submission copies are each run's automarker CSV.
+
+commit 547b13366236f7d99fa181730eac45973f9c9624
+Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
+Date:   Fri Oct 2 12:57:12 2026 +1000
+
+    Tune Lab 4 on the robot and retrain on its logs
+    
+    - Hold the heading while driving when it changes by less than 4 degrees: each
+      new heading cost a second BLE write and doubled the step to ~200 ms.
+    - End the run within 6 cm of the goal; the goal plate is uneven and the robot
+      stalled 7-9 cm short.
+    - Never stop to turn at the second corner, where the slope starts: the teacher
+      always drives, and the safety layer turns on the spot only with a wall within
+      0.30 m ahead (first and third corners) and otherwise slows to 0.08 m/s.
+    - Count hardware step logs ten times in training, and retrain on the
+      2026-10-02 runs.
+    - lab4.py: --raw-speed, an opt-in --slope-boost, and a timestamped copy of the
+      submission CSV under logs/ after every robot run.
+    - 33377006_lab4.csv: the 12:37:52 robot run at raw speed 20, 18.1 s, all four
+      checks passed.
+
+commit 24f74d6d4d04d7b1e2b7ce0c13ae461167007d0a
+Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
+Date:   Thu Oct 1 18:26:47 2026 +1000
+
+    Update commit history
+
 commit f1c99151a55567d13260963f24bbe272247ef28b
 Author: wxy331-hub <wxy331-hub@users.noreply.github.com>
 Date:   Thu Oct 1 18:26:42 2026 +1000
