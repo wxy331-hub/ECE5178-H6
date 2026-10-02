@@ -100,7 +100,11 @@ def test_safety_pauses_after_a_collision_and_will_not_drive_through_a_turn():
         applied, reason = guard.filter(state, [CRUISE_SPEED, 0.0], collided=_ == 0)
         assert applied[0] == 0.0 and reason == "collision-pause"
     assert guard.filter(state, [CRUISE_SPEED, 0.0])[0][0] == CRUISE_SPEED
+    # Open floor ahead: a large turn is taken slowly rather than on the spot.
     applied, reason = guard.filter(state, [CRUISE_SPEED, MAX_TURN_RATE])
+    assert applied[0] == R.TURN_SPEED and reason == "slow-in-turn"
+    # 17.5 cm short of the wall above the first corner: turn on the spot.
+    applied, reason = guard.filter(np.array([-0.5, -0.05, 0.0, 0.1]), [CRUISE_SPEED, MAX_TURN_RATE])
     assert applied[0] == 0.0 and reason == "turn-before-drive"
 
 

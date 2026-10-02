@@ -53,6 +53,12 @@ MAX_TURN_RATE = MODEL_CONFIG["max_turn_rate_rad_s"]
 BALL_RADIUS = 0.0365
 # The controller Lab 3 proved on the robot turns on the spot past this error.
 TURN_GATE = np.deg2rad(15.0)
+# Lab 4 takes a turn past TURN_GATE at this speed instead of on the spot:
+# stopped on the slope after the second corner, the ball rolled back
+# (2026-10-02).  It goes out as raw 8 at raw speed 15, 9 at 18.
+TURN_SPEED = 0.08
+# ...but only with no wall this close straight ahead.
+ROLL_CLEARANCE = 0.30
 # Lab 4 sets no step count; the skeleton's cap.  The slowest run so far, the
 # 2026-09-18 12:54 one, took 388.
 MAX_STEPS = 500
@@ -146,6 +152,20 @@ def keeps_clear(p, q):
 
 # ---------------- actions ----------------
 
+def wall_ahead(state):
+    """Distance from the ball's centre to the first wall straight along its heading."""
+    p = np.asarray(state[:2], dtype=np.float64)
+    d = np.array([np.sin(state[2]), np.cos(state[2])])  # heading 0 is +y
+    e = WALL_B - WALL_A
+    denom = d[0] * e[:, 1] - d[1] * e[:, 0]
+    w = WALL_A - p
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t = (w[:, 0] * e[:, 1] - w[:, 1] * e[:, 0]) / denom  # along the heading
+        u = (w[:, 0] * d[1] - w[:, 1] * d[0]) / denom        # along the wall
+    hit = (np.abs(denom) > 1e-12) & (t >= 0.0) & (u >= 0.0) & (u <= 1.0)
+    return float(t[hit].min()) if hit.any() else np.inf
+
+
 def to_env_action(state, action):
     """The policy's [speed, turn rate] as the environment's [speed, heading].
 
@@ -155,6 +175,50 @@ def to_env_action(state, action):
     """
     speed, rate = float(action[0]), float(action[1])
     return np.array([speed, wrap_angle(float(state[2]) + rate * DT)], dtype=np.float64)
+
+
+# A new heading costs the robot a second BLE write, and on 2026-10-02 a step
+# took ~105 ms when the heading held and ~200 ms when it changed.  The network
+# nudges the heading almost every step, so its runs crawled at ~200 ms a step
+# and stopped late at corners.  While driving, a change smaller than this
+# keeps the heading already sent.
+HEADING_HOLD = np.deg2rad(4.0)
+
+# The run ends this close to the goal, not at Lab 3's 3 cm.  The goal plate is
+# uneven: on 2026-10-02 the robot climbed to within 6 cm, rolled back and spent
+# 5.5 s stalled 7-9 cm short.  6 cm is still on the plate and leaves 4 cm
+# under the automarker's 0.10 m.
+GOAL_STOP_RADIUS = 0.06
+
+# The plate north of the second corner rises.  On 2026-10-02 the robot, told
+# to drive, gained 0.2-0.5 cm a step there and took ~3.4 s for 11 cm, and it
+# rolled back whenever it stopped on it.  With slope_boost, a robot told to
+# drive that has advanced less than CLIMB_PROGRESS over CLIMB_WINDOW steps,
+# with free floor CLIMB_LOOKAHEAD ahead, gets the higher raw speed until it
+# moves again.  The command is still the policy's; only its raw scale changes.
+CLIMB_WINDOW = 4
+CLIMB_PROGRESS = 0.02
+CLIMB_LOOKAHEAD = 0.08
+
+
+def climbing(progress, state):
+    """A ball told to drive for CLIMB_WINDOW steps that barely moved, with nothing in the way."""
+    if len(progress) < CLIMB_WINDOW or any(p is None for p in progress):
+        return False
+    if sum(progress) >= CLIMB_PROGRESS:
+        return False
+    here = np.asarray(state[:2], dtype=np.float64)
+    ahead = here + CLIMB_LOOKAHEAD * np.array([np.sin(state[2]), np.cos(state[2])])
+    return keeps_clear(here, ahead)
+
+
+def hold_heading(env_action, last_sent):
+    """Keep the last heading sent while driving when the new one is close to it."""
+    if last_sent is None or env_action[0] <= 0.0:
+        return env_action
+    if abs(wrap_angle(float(env_action[1]) - last_sent)) < HEADING_HOLD:
+        return np.array([env_action[0], last_sent], dtype=np.float64)
+    return env_action
 
 
 class SafetyLayer:
@@ -201,9 +265,18 @@ class SafetyLayer:
             self.pause -= 1
             speed, rate, reason = 0.0, 0.0, reason or "collision-pause"
         else:
-            if speed > 0.0 and abs(rate) * DT > TURN_GATE:
-                # Driving through a large turn cuts across the inside wall.
-                speed, reason = 0.0, "turn-before-drive"
+            if speed > TURN_SPEED and abs(rate) * DT > TURN_GATE:
+                # Cruising through a large turn cuts across the inside wall.
+                # With a wall close ahead (the first and third corners) the
+                # ball still turns on the spot: rolling through the turn
+                # carried it into that wall in simulation.  With open floor
+                # ahead (the second corner, where the slope starts) it slows
+                # instead of stopping, so it keeps its grip; _stops_clear
+                # below still checks the arc.
+                if wall_ahead(state) < ROLL_CLEARANCE:
+                    speed, reason = 0.0, "turn-before-drive"
+                else:
+                    speed, reason = TURN_SPEED, "slow-in-turn"
             if not self._stops_clear(state, speed, rate):
                 # A zero command does not stop a rolling ball, and turning
                 # while it rolls on swings it toward whatever is beside it.
@@ -275,7 +348,7 @@ def _state_row(prefix, state):
 
 def run_episode(policy_fn, sim_env, robot_env=None, *, max_steps=MAX_STEPS,
                 render=False, pos_offset=(0.0, 0.0), heading_offset=0.0,
-                records=None, step_log=None, verbose=False):
+                records=None, step_log=None, verbose=False, slope_boost=None):
     """Drive the maze with ``policy_fn(state) -> [speed, turn_rate]``.
 
     In simulation there is one ball: the filter tracks it from the
@@ -308,6 +381,9 @@ def run_episode(policy_fn, sim_env, robot_env=None, *, max_steps=MAX_STEPS,
     heading_sensor = ImuHeadingSensor(initial_heading) if hardware else None
     robot_guard, sim_guard = SafetyLayer(), SafetyLayer()
     robot_done = sim_done = False
+    sent_heading = None
+    base_raw = robot_env.raw_speed_limit if hardware else None
+    progress = deque(maxlen=CLIMB_WINDOW)
     robot_collided = sim_collided = False
     yaw_missing = 0
     stop_reason = "max_steps"
@@ -323,7 +399,8 @@ def run_episode(policy_fn, sim_env, robot_env=None, *, max_steps=MAX_STEPS,
         state = ekf.state_est.copy()
         proposed = np.zeros(2) if robot_done else np.asarray(policy_fn(state), dtype=np.float64)
         applied, reason = robot_guard.filter(state, proposed, robot_collided)
-        env_action = to_env_action(state, applied)
+        env_action = hold_heading(to_env_action(state, applied), sent_heading)
+        sent_heading = float(env_action[1])
 
         if hardware:
             sensor_obs, _, _, _, sensor_info = robot_env.step(env_action)
@@ -373,11 +450,18 @@ def run_episode(policy_fn, sim_env, robot_env=None, *, max_steps=MAX_STEPS,
                 "applied_heading": float(env_action[1]),
                 "collision": float(robot_collided), "safety": reason or "",
                 **_state_row("next", ekf.state_est),
+                "raw_limit": robot_env.raw_speed_limit if hardware else "",
             })
 
-        robot_done = robot_done or float(np.linalg.norm(ekf.state_est[:2] - GOAL)) <= ARRIVAL_TOLERANCE
+        if hardware and slope_boost:
+            along = np.array([np.sin(state[2]), np.cos(state[2])])
+            moved = float((ekf.state_est[:2] - state[:2]) @ along)
+            progress.append(moved if applied[0] > 0.0 and not robot_collided else None)
+            robot_env.raw_speed_limit = slope_boost if climbing(progress, ekf.state_est) else base_raw
+
+        robot_done = robot_done or float(np.linalg.norm(ekf.state_est[:2] - GOAL)) <= GOAL_STOP_RADIUS
         if hardware:
-            sim_done = sim_done or float(np.linalg.norm(truth[:2] - GOAL)) <= ARRIVAL_TOLERANCE
+            sim_done = sim_done or float(np.linalg.norm(truth[:2] - GOAL)) <= GOAL_STOP_RADIUS
         if robot_done and (sim_done or not hardware):
             stop_reason = "arrived"
             break

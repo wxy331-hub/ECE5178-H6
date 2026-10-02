@@ -12,6 +12,7 @@ stop it, and the run prints how often it did.
 # Import necessary libraries
 import argparse
 import csv
+import shutil
 import time
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
@@ -47,7 +48,7 @@ def as_controller(policy):
 
 
 @contextmanager
-def managed_env(sim: bool, render: bool = True):
+def managed_env(sim: bool, render: bool = True, raw_speed: int = R.lab3.RAW_SPEED_LIMIT):
     """Yield ``(sim_env, robot_env)``; ``robot_env`` is None in simulation."""
     sim_env = R.make_sim_env(render=render)
     sim_env.set_log_path("logs/lab4_sim.csv")
@@ -64,6 +65,10 @@ def managed_env(sim: bool, render: bool = True):
                 print(f"Selected: {selected_toy.name}")
                 api = connect_with_retry(stack, selected_toy)
                 real_env = R.make_real_env(api)
+                # Robot.step sends int(speed_cmd / vel_limit * raw_speed_limit),
+                # so the policy's 0.15 command goes out as this raw speed.  Speed
+                # is observed from the encoders in cm/s, so nothing else rescales.
+                real_env.raw_speed_limit = raw_speed
                 real_env.set_log_path("logs/lab4_real.csv")
                 real_env.start_logging()
                 try:
@@ -131,7 +136,18 @@ def parse_args(argv=None):
     parser.add_argument("--weights", type=Path, default=WEIGHTS)
     parser.add_argument("--no-render", action="store_true", help="disable animation")
     parser.add_argument("--steps", type=int, default=R.MAX_STEPS, help="safety cap on steps")
-    return parser.parse_args(argv)
+    parser.add_argument("--raw-speed", type=int, default=R.lab3.RAW_SPEED_LIMIT,
+                        help="raw Sphero speed (0-255) the robot drives at; Lab 3 used 15. "
+                             "Assessment marks a run under 15 s higher. Hardware only.")
+    parser.add_argument("--slope-boost", type=int, default=None, metavar="RAW",
+                        help="raw speed for a robot that is told to drive but has stalled with "
+                             "free floor ahead (the slope after the second corner). Off by default.")
+    args = parser.parse_args(argv)
+    if not 1 <= args.raw_speed <= 255:
+        parser.error("--raw-speed must be between 1 and 255")
+    if args.slope_boost is not None and not args.raw_speed < args.slope_boost <= 255:
+        parser.error("--slope-boost must be above --raw-speed and at most 255")
+    return args
 
 
 def main(argv=None):
@@ -145,12 +161,16 @@ def main(argv=None):
     hardware = False
 
     try:
-        with managed_env(args.sim, render=render) as (sim_env, robot_env):
+        with managed_env(args.sim, render=render, raw_speed=args.raw_speed) as (sim_env, robot_env):
             hardware = robot_env is not None
+            if hardware:
+                print(f"Robot raw speed {args.raw_speed}"
+                      + (f", {args.slope_boost} when stalled on a slope." if args.slope_boost else "."))
             try:
                 R.run_episode(controller, sim_env, robot_env, max_steps=args.steps,
                               render=render, records=records,
-                              step_log=steps if hardware else None, verbose=True)
+                              step_log=steps if hardware else None, verbose=True,
+                              slope_boost=args.slope_boost)
             finally:
                 stop_motion(sim_env, robot_env)
     except ExperimentAborted as error:
@@ -160,9 +180,17 @@ def main(argv=None):
             if records:
                 path = write_submission(records)
                 print(f"Wrote {len(records)} rows to {path}")
+                if hardware:
+                    # The next run overwrites the submission; keep every robot run's copy.
+                    kept = Path("logs") / f"lab4_submission_{time.strftime('%m%d_%H%M%S')}.csv"
+                    kept.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(path, kept)
+                    print(f"Kept a copy as {kept}")
                 print_metrics(records)
         finally:
             if hardware and steps:
+                for row in steps:
+                    row["raw_speed"] = args.raw_speed
                 try:
                     print(f"Wrote {len(steps)} steps to {write_step_log(steps)}")
                 except OSError as error:

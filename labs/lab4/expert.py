@@ -4,8 +4,10 @@ Lab 3's WaypointFollower keeps history -- which waypoint it is on, which it
 has already reached.  A teacher for behaviour cloning has to answer for any
 state it is shown, including states the learned policy reached by a route of
 its own, so this one keeps none.  It plans from the state, drives at the plan's
-first or second waypoint, and asks Lab 3's controller for the action: turn on
-the spot past 15 degrees of heading error, otherwise cruise.
+first or second waypoint, and takes Lab 3's controller's heading.  Unlike Lab
+3 it never stops to turn: a ball stopped on the slope after the second corner
+rolled back (2026-10-02), so it always drives and the safety layer takes a
+large turn at TURN_SPEED instead.
 """
 
 import functools
@@ -14,6 +16,7 @@ import numpy as np
 
 from runtime import (
     ARRIVAL_TOLERANCE,
+    CRUISE_SPEED,
     DT,
     GOAL,
     GRID_RESOLUTION,
@@ -114,9 +117,9 @@ def label_state(state):
     target = target_for(position, state[2])
     if target is None:
         return None, "across-wall"
-    speed, heading = CONTROLLER.compute_action(state, target)
+    _, heading = CONTROLLER.compute_action(state, target)
     rate = float(np.clip(wrap_angle(heading - state[2]) / DT, -MAX_TURN_RATE, MAX_TURN_RATE))
-    return np.array([float(speed), rate]), "ok"
+    return np.array([CRUISE_SPEED, rate]), "ok"
 
 
 def expert_policy(state):

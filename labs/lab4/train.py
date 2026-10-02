@@ -26,6 +26,7 @@ from Policy import MAX_TURN_RATE, Policy
 
 LAB_DIR = Path(__file__).resolve().parent
 WEIGHTS = LAB_DIR / "weight.pth"
+HARDWARE_LOG_WEIGHT = 10
 
 
 def as_controller(policy):
@@ -159,9 +160,15 @@ def main(argv=None):
             print(f"  {name}: none yet")
             continue
         kept, labels = D.label(raw)
-        pairs.append((kept, labels))
         print(f"  {name}: {len(kept)} of {len(raw)} states answerable, "
               f"{(labels[:, 0] > 0).mean():.0%} labelled drive")
+        if name == "hardware logs":
+            # A few hundred robot states against ~40k simulated ones would be
+            # averaged away; they are the states the real robot actually
+            # reaches, so they count HARDWARE_LOG_WEIGHT times.
+            kept, labels = (np.repeat(a, HARDWARE_LOG_WEIGHT, axis=0) for a in (kept, labels))
+            print(f"    counted {HARDWARE_LOG_WEIGHT} times each")
+        pairs.append((kept, labels))
     train_data = _stack(*pairs)
     # Fixed before any training and never trained on: a synthetic draw of its
     # own, whole teacher runs of its own, and the two held-out hardware runs.
