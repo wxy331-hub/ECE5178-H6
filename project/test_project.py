@@ -4,6 +4,7 @@ import itertools
 import sys
 from collections import deque
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import numpy as np
@@ -11,6 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fast_race  # noqa: E402
+from sphero_env.envs.custom_maze_full import cell_to_world  # noqa: E402
 import race  # noqa: E402
 from mission import (  # noqa: E402
     count_turns, make_mission, neighbours, parse_place, plan_cells, plate_name, reachable_from,
@@ -211,3 +213,144 @@ def test_the_slope_boost_waits_until_the_robot_faces_its_heading():
     assert fast_race.boosted(40, 0.0, float("nan"), args) == 40  # no yaw yet
     assert fast_race.boosted(40, 0.4, 0.0, args) == 40           # moving fine
     assert fast_race.boosted(0, 0.0, 0.0, args) == 0             # stopping
+
+
+# ---------------- fast race: corners, walls, stalls ----------------
+
+def _centre(cell):
+    return np.asarray(cell_to_world(cell), dtype=float)
+
+
+def test_a_closed_plate_side_sends_the_route_round_another_way():
+    assert plan_cells((1, 2), 0, (4, 0))[1] == (1, 1)
+    detour = plan_cells((1, 2), 0, (4, 0), {((1, 2), (1, 1))})
+    assert (1, 1) not in detour and detour[-1] == (4, 0)
+
+
+def test_legs_with_a_wall_all_along_one_side():
+    assert fast_race.wall_side(_centre((1, 0)), _centre((4, 0))) == -1   # top row east: north wall on the left
+    assert fast_race.wall_side(_centre((4, 0)), _centre((0, 0))) == 1    # top row west: on the right
+    assert fast_race.wall_side(_centre((0, 4)), _centre((0, 2))) == -1   # column 0 north: the west wall
+    assert fast_race.wall_side(_centre((1, 2)), _centre((1, 0))) == 0    # (1,2) is open on both sides
+    # (1,1) is walled on both sides: no side to lean on.
+    assert fast_race.wall_side(_centre((1, 1)) - [0.0, 0.1], _centre((1, 1))) == 0
+
+
+def test_the_top_row_leans_on_the_north_wall_and_fast_corners_are_braked():
+    args = SimpleNamespace(turn_lead=12.0, stop_lead=10.0, raw=40, corner_speed=0.35, wall_bias=8.0)
+    top_row = [_centre((1, 0)), _centre((4, 0))]
+    here, east = np.array([0.0, 0.52]), np.array([0.3, 0.0])
+    heading, raw, _, stopping, turning, braking = fast_race.command_for(here, east, top_row, 0, False, args, [-1])
+    assert heading == pytest.approx(82.0) and raw == 40 and not (stopping or turning or braking)
+    # Without the wall the locator correction steers the "north of the line" ball south.
+    heading = fast_race.command_for(here, east, top_row, 0, False, args, [0])[0]
+    assert heading > 90.0
+    # Towards the corner at (1,2): braked when fast, driven when not.
+    legs = [_centre((0, 2)), _centre((1, 2)), _centre((1, 0))]
+    fast = fast_race.command_for(np.array([-0.45, 0.0]), np.array([0.55, 0.0]), legs, 0, False, args, [0, 0])
+    assert fast[1] == 0 and fast[5] and fast[2] == 0
+    slow = fast_race.command_for(np.array([-0.45, 0.0]), np.array([0.30, 0.0]), legs, 0, False, args, [0, 0])
+    assert slow[1] == 40 and not slow[5]
+
+
+def test_the_plate_changes_only_through_an_open_side():
+    assert fast_race.track_plate((0, 2), np.array([-0.365, 0.0])) == ((0, 2), None)       # 1 cm past the boundary
+    assert fast_race.track_plate((0, 2), np.array([-0.350, 0.0])) == ((1, 2), (0, 2))     # 2.5 cm past
+    assert fast_race.track_plate((0, 2), np.array([-0.5, 0.20])) == ((0, 2), None)        # (0,1) is behind a wall
+    # Cutting the corner from (0,3) to (1,2): it came through (0,2), not from (0,3), so a
+    # back-off does not go straight through the wall between (1,2) and (1,3) (Codex 1015).
+    assert fast_race.track_plate((0, 3), np.array([-0.36, -0.07])) == ((1, 2), (0, 2))
+
+
+def test_a_locator_that_stays_on_another_plate_is_believed():
+    # 112149: read into (1,3), then west over the (0,3)|(1,3) wall; the plate stayed (1,3) for good.
+    plate, came_from, lost = (1, 3), (1, 4), 0
+    west = np.array([-0.38, -0.353])                       # on (0,3) by the locator
+    for _ in range(fast_race.LOST_STEPS - 1):
+        plate, came_from, lost = fast_race.follow_plate(plate, came_from, lost, west)
+        assert plate == (1, 3)                             # a short reading over a wall is not believed
+    plate, came_from, lost = fast_race.follow_plate(plate, came_from, lost, west)
+    assert plate == (0, 3) and came_from is None and lost == 0   # a wall between: where it came from is unknown
+    # Then on through open sides as usual.
+    plate, came_from, lost = fast_race.follow_plate(plate, came_from, lost, np.array([-0.45, -0.10]))
+    assert (plate, came_from) == ((0, 2), (0, 3))
+    # A reading back on the plate clears the count.
+    plate, came_from, lost = (1, 3), None, 3
+    assert fast_race.follow_plate(plate, came_from, lost, np.array([-0.25, -0.25])) == ((1, 3), None, 0)
+
+
+def test_a_stall_backs_off_to_a_plate_behind_and_avoids_a_side_that_stalls_twice():
+    goal = (4, 0)
+    legs = fast_race.legs_of(plan_cells((0, 4), 0, goal))      # north, east, north up the slope, east
+    stalls, avoid = {}, set()
+    stuck = np.array([-0.33, 0.08])                            # going north on (1,2), 8 cm past its centre
+    back, route, new = fast_race.recovery(stuck, legs, 2, (1, 2), (0, 2), goal, stalls, avoid)
+    assert back == (1, 2) and route[:2] == [(1, 2), (1, 1)] and not avoid
+    np.testing.assert_allclose(new[0], stuck)
+    np.testing.assert_allclose(new[1], _centre((1, 2)))
+    # Just onto (1,1): its centre is ahead, so back to the plate it came from.
+    back = fast_race.recovery(np.array([-0.25, 0.14]), legs, 2, (1, 1), (1, 2), goal, {}, set())[0]
+    assert back == (1, 2)
+    # The same plate and direction again: that side is closed while there is another way.
+    back, route, new = fast_race.recovery(stuck, legs, 2, (1, 2), (0, 2), goal, stalls, avoid)
+    assert ((1, 2), (1, 1)) in avoid and (1, 1) not in route and route[-1] == goal
+    # Into (0,0) there is only one way: it stays open however often the ball stalls there
+    # (125938: 1.6 cm into (0,0), still counted on (1,0)).
+    legs = [_centre((1, 0)), _centre((0, 0))]
+    stalls, avoid = {}, set()
+    for _ in range(3):
+        back, route, _ = fast_race.recovery(np.array([-0.39, 0.48]), legs, 0, (1, 0), (2, 0), (0, 0), stalls, avoid)
+    assert back == (1, 0) and not avoid and route == [(1, 0), (0, 0)]
+    # On the goal plate, heading for its centre, there is no side being left: nothing to close.
+    stalls, avoid = {}, set()
+    for _ in range(3):
+        fast_race.recovery(np.array([-0.42, 0.48]), legs, 0, (0, 0), (1, 0), (0, 0), stalls, avoid)
+    assert not avoid
+
+
+def test_a_back_off_is_driven_to_its_point_before_the_ball_turns_round():
+    # Codex 1015: with the ordinary lead the ball turned north again after backing 2-4 cm,
+    # and a back-off shorter than the lead was skipped altogether.
+    args = SimpleNamespace(turn_lead=12.0, stop_lead=10.0, raw=40, corner_speed=0.35, wall_bias=8.0)
+    legs = fast_race.legs_of(plan_cells((0, 4), 0, (4, 0)))
+    for stuck in ([-0.25, 0.08], [-0.33, 0.08], [-0.34, 0.08]):   # straight back, and off the line (135, 132 deg)
+        back, _, new = fast_race.recovery(np.array(stuck), legs, 2, (1, 2), (0, 2), (4, 0), {}, set())
+        assert back == (1, 2)
+        target = new[1]
+        way = (target - new[0]) / np.linalg.norm(target - new[0])
+        sides = [0] * (len(new) - 1)
+        for left_cm, expected_leg in ((7.0, 0), (3.0, 0), (1.0, 1)):
+            here = target - way * left_cm / 100.0
+            leg = fast_race.command_for(here, 0.15 * way, new, 0, False, args, sides, backoff_leg=0)[2]
+            assert leg == expected_leg, (stuck, left_cm, leg)
+    # Stalled 3 cm into the leg west from (1,0): no plate centre behind on the route, so back
+    # to the open plate straight behind, (2,0), and the 28 cm back east is really driven.
+    legs = [_centre((1, 0)), _centre((0, 0))]
+    back, _, new = fast_race.recovery(np.array([-0.28, 0.50]), legs, 0, (1, 0), None, (0, 0), {}, set())
+    assert back == (2, 0)
+    heading, raw, leg = fast_race.command_for(np.array([-0.28, 0.50]), np.zeros(2), new, 0, True, args, [0, 0])[:3]
+    assert leg == 0 and heading == pytest.approx(90.0, abs=1.0) and raw == 40
+
+
+def test_a_ball_leaning_on_a_wall_of_the_goal_plate_is_on_it():
+    assert fast_race.held_on_plate([0.5, 0.5], (4, 0))
+    assert fast_race.held_on_plate([0.5, 0.592], (4, 0))       # against the north wall: the limit is 0.0885
+    assert fast_race.held_on_plate([0.60, 0.60], (4, 0))       # in the corner, the locator reading past it
+    assert not fast_race.held_on_plate([0.5, 0.40], (4, 0))    # south of (4,0) is open: half on (4,1)
+    assert not fast_race.held_on_plate([0.40, 0.5], (4, 0))    # west is open: half on (3,0)
+    assert fast_race.held_on_plate([-0.5, 0.40], (0, 0))       # south of (0,0) is a wall
+    assert not fast_race.held_on_plate([-0.455, -0.09], (0, 0))  # stalled on (0,2), plates away (124624)
+    assert not fast_race.held_on_plate([0.5, 0.75], (4, 0))       # 12.5 cm past the north wall: not leaning on it
+
+
+def test_braking_holds_through_the_turn_until_the_ball_is_slow():
+    # Codex 1015: on stepping to the next leg the braking used to be judged on that leg only.
+    args = SimpleNamespace(turn_lead=12.0, stop_lead=10.0, raw=40, corner_speed=0.35, wall_bias=8.0)
+    legs = fast_race.legs_of(plan_cells((0, 4), 0, (4, 0)))
+    heading, raw, leg, _, turning, braking = fast_race.command_for(
+        np.array([-0.385, 0.0]), np.array([0.40, 0.0]), legs, 1, False, args, [0] * 4)
+    assert leg == 2 and heading == pytest.approx(0.0) and turning and braking and raw == 0
+    heading, raw, leg, _, turning, braking = fast_race.command_for(
+        np.array([-0.27, 0.01]), np.array([0.20, 0.10]), legs, 2, True, args, [0] * 4)
+    assert raw == 40 and not braking
+

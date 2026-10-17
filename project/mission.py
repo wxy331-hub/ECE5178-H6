@@ -32,12 +32,26 @@ def _blocked(a, b):
     return (a, b) in BLOCKED_EDGES or (b, a) in BLOCKED_EDGES
 
 
-def neighbours(cell):
-    """(direction index, cell) for every plate one step from ``cell`` with no wall between."""
-    col, row = cell
-    for d, (dc, dr) in enumerate(_STEPS):
-        other = (col + dc, row + dr)
-        if 0 <= other[0] < SIZE and 0 <= other[1] < SIZE and not _blocked(cell, other):
+def step_plate(cell, d):
+    """The plate one step from ``cell`` in direction d (0 north, 1 east, 2 south, 3 west), on the maze or not."""
+    return (cell[0] + _STEPS[d][0], cell[1] + _STEPS[d][1])
+
+
+def walled(cell, d):
+    """True if side d of plate ``cell`` is a wall: the maze's edge or an inner wall."""
+    other = step_plate(cell, d)
+    return not (0 <= other[0] < SIZE and 0 <= other[1] < SIZE) or _blocked(cell, other)
+
+
+def neighbours(cell, extra_blocked=()):
+    """(direction index, cell) for every plate one step from ``cell`` with no wall between.
+
+    ``extra_blocked`` holds (plate, plate) pairs to treat as walls as well.
+    """
+    for d in range(4):
+        other = step_plate(cell, d)
+        if (not walled(cell, d) and (cell, other) not in extra_blocked
+                and (other, cell) not in extra_blocked):
             yield d, other
 
 
@@ -137,11 +151,12 @@ def make_mission(start, heading_deg, goal):
     return Mission(start_xy, heading_deg, goal_centre)
 
 
-def plan_cells(start_cell, start_heading_deg, goal_cell):
+def plan_cells(start_cell, start_heading_deg, goal_cell, extra_blocked=()):
     """Plates from start to goal: fewest plates, then fewest turns, then least turning.
 
     Dijkstra over (plate, heading): at most 25 x 4 states.  A turn costs one
     turn and its size in quarter turns (1, or 2 for turning round).
+    ``extra_blocked`` as for ``neighbours``.
     """
     start_dir = _HEADINGS.index(int(round(start_heading_deg / 90.0)) % 4 * 90)
     best = {(start_cell, start_dir): (0, 0, 0)}
@@ -158,7 +173,7 @@ def plan_cells(start_cell, start_heading_deg, goal_cell):
                 key = previous[key]
                 path.append(key[0])
             return path[::-1]
-        for nd, other in neighbours(cell):
+        for nd, other in neighbours(cell, extra_blocked):
             quarter = min((nd - d) % 4, (d - nd) % 4)
             step = (cost[0] + 1, cost[1] + (quarter > 0), cost[2] + quarter)
             if step < best.get((other, nd), (np.inf,)):
